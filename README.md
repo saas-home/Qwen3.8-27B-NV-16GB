@@ -1,3 +1,22 @@
+# About This Fork (`saas-home/Qwen3.8-27B-NV-16GB`)
+
+> [!NOTE]
+> This repository is a specialized, production-hardened fork of [`MiaAI-Lab/Qwen3.8-27B-16gb-NVIDIA-GPUs-one-click-install`](https://github.com/MiaAI-Lab/Qwen3.8-27B-16gb-NVIDIA-GPUs-one-click-install), originally created and maintained by [Mia's AI Lab](https://x.com/MiaAI_lab). All original one-click installation workflows, Windows/Linux launchers, and UI harness integrations are the work of Mia's AI Lab.
+>
+> While upstream provides general 16–32 GB desktop setups, this fork focuses on **maximizing context horizon, multi-turn reasoning stability, and throughput on consumer 16 GB NVIDIA GPUs** (e.g., RTX 4070 Ti SUPER) and extreme long-context developer workloads.
+>
+> **Key Enhancements in this Fork:**
+> - **204,800 Token Context Window:** Expands verified stable context to a full 204.8k tokens (~800 pages) on a single 16 GB card with 3.0 bpw EXL3 and 4-bit Hadamard KV cache.
+> - **Zero-VRAM Multimodal Vision (`EXL3_VISION_PINNED=1`):** Pins the vision tower in host DDR5 RAM, reclaiming ~0.87 GB VRAM directly for the KV cache.
+> - **Headless VRAM Budget Optimization:** Automatically detects headless environments (`is_headless()`), increasing usable VRAM to **15.7 GB** (vs. 14.7 GB upstream desktop default).
+> - **24 GB DDR5 Host Prompt Cache (`CPU_CACHE_GB=24`):** Secondary host RAM tiering preserves prompt prefixes, yielding **sub-second TTFT (0.93s at 200k tokens)** on iterative reasoning turns.
+> - **AMD Ryzen 9 7950X3D CPU Affinity:** Pins worker execution to CCD0 3D V-Cache (`AFFINITY=0-7,16-23`), eliminating cross-CCD latency penalties.
+> - **128k Generation Ceiling & Reasoning Hygiene:** Eliminates Copilot socket dropouts (`MAX_TOKENS=128000`) and sanitizes historical `<think>` tags (`NO_REASONING_PRESERVE=1`).
+> - **Dynamic Engine Resolution:** Supports ExLlamaV3 v1.4.9+ through dynamic semver resolution.
+> - **Detailed Technical Whitepaper & Benchmarks:** Comprehensive empirical evaluation, latency curves, and head-to-head comparison against llama.cpp are documented in [Qwen3.8-27B-NV-16GB-Optimization-Whitepaper.md](Qwen3.8-27B-NV-16GB-Optimization-Whitepaper.md).
+
+---
+
 <h1 align="center">Qwen3.8-27B on 16-32 GB Nvidia GPUs one-click install for Windows / Linux</h1>
 
 <p align="center">

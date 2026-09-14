@@ -242,20 +242,22 @@ def build_model(argv, use_draft = True):
     from exllamav3 import model_init, Generator
     parser = ArgumentParser()
     model_init.add_args(parser, add_draft_model_args = use_draft)
+    parser.add_argument("-dt", "--draft_tokens", type = int, default = 0)
     args = parser.parse_args(argv)
+    ccs_bytes = int(getattr(args, "cpu_cache_size", 0.0) * (1024 ** 3))
+    dt = args.draft_tokens if getattr(args, "draft_tokens", 0) > 0 else None
     if use_draft:
         model, config, cache, tokenizer, draft_model, draft_config, draft_cache = \
             model_init.init(args, progress = True)
         generator = Generator(
             model, cache, tokenizer,
             draft_model = draft_model, draft_cache = draft_cache,
-            # num_draft_tokens defaults to the draft model's arch-declared
-            # default_draft_size (MTP head: 4). Must
-            # match model_init's max_history sizing, which reads the same caps.
+            cpu_cache_size = ccs_bytes,
+            num_draft_tokens = dt,
         )
     else:
         model, config, cache, tokenizer = model_init.init(args, progress = True)
-        generator = Generator(model, cache, tokenizer)
+        generator = Generator(model, cache, tokenizer, cpu_cache_size = ccs_bytes)
     return generator, tokenizer, config
 
 
@@ -274,6 +276,8 @@ def load_vision(config, max_pixels):
         return None
     try:
         from exllamav3 import Model
+        if getattr(config.infer_params, "vision_pinned", False):
+            print(" == vision tower weights: PINNED in host RAM (zero-copy via PCIe)", flush = True)
         vm = Model.from_config(config, component = "vision")
         vm.load(progressbar = True)
         vision["model"] = vm
@@ -344,11 +348,24 @@ def extract_images(messages):
     return out, urls
 
 
-def normalize_messages(messages):
-    """OpenAI history -> template-compatible dicts (tool_calls args str->dict)."""
+def normalize_messages(messages, strip_thinking = None):
+    """OpenAI history -> template-compatible dicts (tool_calls args str->dict, strip past think tags)."""
+    if strip_thinking is None:
+        strip_thinking = os.environ.get("NO_REASONING_PRESERVE", "1").lower() not in ("0", "false", "no")
     out = []
     for m in messages:
         m = dict(m)
+        if strip_thinking and m.get("role") == "assistant":
+            content = m.get("content")
+            if isinstance(content, str) and "<think>" in content:
+                m["content"] = re.sub(r"<think>.*?</think>", "", content, flags = re.DOTALL).strip()
+            elif isinstance(content, list):
+                new_parts = []
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
+                        part = dict(part, text = re.sub(r"<think>.*?</think>", "", part["text"], flags = re.DOTALL).strip())
+                    new_parts.append(part)
+                m["content"] = new_parts
         if m.get("role") == "assistant" and m.get("tool_calls"):
             calls = []
             for c in m["tool_calls"]:
@@ -364,6 +381,7 @@ def normalize_messages(messages):
             m["tool_calls"] = calls
         out.append(m)
     return out
+
 
 
 def split_reasoning(text):
@@ -633,10 +651,6 @@ def generate_full(generator, tokenizer, messages, max_tokens, temperature,
         with gen_lock:
             generator.enqueue(job)
             while generator.num_remaining_jobs():
-                # Stop has to reach the GPU, not just the socket. One check per
-                # decode step is a few milliseconds of latency and releases the
-                # job's cache pages immediately, so the next request is not
-                # queued behind a reply nobody is reading any more.
                 if should_stop is not None and should_stop():
                     generator.cancel(job)
                     reason = "cancelled"
@@ -733,8 +747,9 @@ def parse_request(body):
     messages = body.get("messages")
     if not messages or not isinstance(messages, list):
         return None, "`messages` (list) is required"
+    default_max = int(os.environ.get("MAX_TOKENS", 65536))
     max_tokens = int(body.get("max_tokens") or
-                     body.get("max_completion_tokens") or 1024)
+                     body.get("max_completion_tokens") or default_max)
     temperature = float(body.get("temperature", 0.6))
     top_p = float(body.get("top_p", 0.95))
     top_k = int(body.get("top_k", 20))
@@ -757,8 +772,10 @@ def parse_request(body):
     kwargs = body.get("chat_template_kwargs") or {}
     enable_thinking = kwargs.get("enable_thinking")
     effort = str(body.get("reasoning_effort") or "").strip().lower()
+    if not effort:
+        effort = str(os.environ.get("REASONING_EFFORT", "high")).strip().lower()
     if enable_thinking is None:
-        enable_thinking = effort not in ("none", "off", "minimal")
+        enable_thinking = effort not in ("none", "off", "minimal", "0", "false")
     return dict(
         messages = normalize_messages(messages),
         max_tokens = max_tokens, temperature = temperature,
@@ -794,6 +811,7 @@ async def chat_completions(request):
     req, err = parse_request(body)
     if err:
         return web.json_response({"error": {"message": err}}, status = 400)
+    print(f" -> [{time.strftime('%H:%M:%S')}] request: stream={req['stream']}, max_tokens={req['max_tokens']}, msgs={len(req['messages'])}, thinking={req['enable_thinking']}", flush = True)
 
     import asyncio
     if not req["stream"]:
@@ -864,6 +882,8 @@ async def chat_completions(request):
                     queue.put_nowait,
                     ("done", (calls, finish, reasoning, content, ptoks, otoks)))
             except Exception as e:
+                import traceback
+                print(f" !! [{time.strftime('%H:%M:%S')}] worker error: {type(e).__name__}: {e}\n{traceback.format_exc()}", flush = True)
                 loop.call_soon_threadsafe(queue.put_nowait, ("error", str(e)))
         loop.run_in_executor(None, worker)
 
@@ -946,6 +966,7 @@ async def chat_completions(request):
                 while not gone.is_set():
                     transport = request.transport
                     if transport is None or transport.is_closing():
+                        print(f" !! [{time.strftime('%H:%M:%S')}] client closed connection / disconnected", flush = True)
                         gone.set()
                         return
                     await asyncio.sleep(0.2)
@@ -965,6 +986,7 @@ async def chat_completions(request):
                     await flush_pending()
                 elif kind == "done":
                     calls, finish, reasoning, content, ptoks, otoks = payload
+                    print(f" <- [{time.strftime('%H:%M:%S')}] done: finish={finish}, prompt_toks={ptoks}, out_toks={otoks}, reasoning_len={len(reasoning or '')}, content_len={len(content or '')}", flush = True)
                     await flush_pending(final = True)
                     if forced_choice:
                         # Buffered path (no deltas were streamed): emit the
@@ -1146,6 +1168,8 @@ def main():
                     help = "'mtp' for MTP drafting (head inside the "
                            "main checkpoint: no extra weights, much smaller KV footprint) "
                            "or 'none' to disable drafting")
+    ap.add_argument("-dt", "--draft_tokens", type = int, default = int(os.environ.get("DRAFT_TOKENS", 0)),
+                    help = "Number of speculative draft tokens per pass (e.g. 2, default: 4 for MTP)")
     ap.add_argument("-gs", "--grid_size", type = float, default = 14.7,
                     help = "GPU memory budget in GB (autosplit + process cap). "
                            "14.7 is the 16 GB-card recipe")
@@ -1182,7 +1206,14 @@ def main():
                     help = "max request body size in MiB (aiohttp's built-in "
                            "default is 1 MiB, far too small for a full tool "
                            "set + a long transcript)")
+    ap.add_argument("--no-reasoning-preserve", dest = "no_reasoning_preserve", action = "store_true",
+                    default = None,
+                    help = "Strip internal <think>...</think> tags from prior conversational history to save context tokens (default: True)")
+    ap.add_argument("--reasoning-preserve", dest = "no_reasoning_preserve", action = "store_false",
+                    help = "Preserve internal <think>...</think> tags from prior conversational history")
     args = ap.parse_args()
+    if args.no_reasoning_preserve is not None:
+        os.environ["NO_REASONING_PRESERVE"] = "1" if args.no_reasoning_preserve else "0"
     MODEL_ID = (args.model_id or os.path.basename(os.path.normpath(args.model))).strip().lower() or MODEL_ID
     _cap_process_vram(args.grid_size)
     _draft = args.draft_model.lower()
@@ -1198,10 +1229,13 @@ def main():
         argv += ["-cq", args.cache_quant]
     if args.cpu_cache_size:
         argv += ["-ccs", str(args.cpu_cache_size)]
+    if getattr(args, "draft_tokens", 0) > 0:
+        argv += ["-dt", str(args.draft_tokens)]
 
+    tokens_msg = f" ({args.draft_tokens} tokens/pass)" if getattr(args, "draft_tokens", 0) > 0 else ""
     print(f" == loading {args.model}"
-          + (" + MTP head" if use_mtp else
-             (f" + draft {args.draft_model}" if use_draft else " (no draft)"))
+          + (f" + MTP head{tokens_msg}" if use_mtp else
+             (f" + draft {args.draft_model}{tokens_msg}" if use_draft else " (no draft)"))
           + " ...", flush = True)
     generator, tokenizer, config = build_model(argv, use_draft = use_draft)
     stats["context_length"] = int(args.cache_size)
@@ -1218,6 +1252,8 @@ def main():
               f"(cap {args.grid_size} GB)", flush = True)
     except Exception as e:
         print(f" == cuda memory stats unavailable: {e}", flush = True)
+    if getattr(generator, "cpu_page_cache", None):
+        print(f" == system RAM prompt cache active: {args.cpu_cache_size:.1f} GB pinned host memory", flush = True)
     # Build and mount first, bind the port next, and only then say Ready: a
     # box that appears before any of that can promise an address that never
     # answers, which is the single most confusing way for a launch to fail.
