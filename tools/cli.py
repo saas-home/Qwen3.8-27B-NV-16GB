@@ -787,10 +787,14 @@ def cmd_doctor(a) -> int:
             info = json.loads(probe.stdout.strip().splitlines()[-1])
         except Exception:                                   # noqa: BLE001
             info = {}
-        if info.get("engine") == "1.4.4":
-            ok("exllamav3", "1.4.4")
-        elif info.get("engine"):
-            bad("exllamav3 version", f"{info['engine']} (this kit needs 1.4.4)")
+        import wheels
+        expected_ver = wheels.ENGINE_VERSION
+        engine_ver = info.get("engine")
+        if engine_ver and tuple(map(int, re.findall(r"\d+", engine_ver)[:3])) >= (1, 4, 4):
+            note = f"{engine_ver} (configured: {expected_ver})" if engine_ver != expected_ver else engine_ver
+            ok("exllamav3", note)
+        elif engine_ver:
+            bad("exllamav3 version", f"{engine_ver} (configured: {expected_ver}, needs >= 1.4.4)")
         else:
             bad("exllamav3", "not importable in .venv - run: simplex setup")
         for mod in ("torch", "aiohttp", "huggingface_hub"):

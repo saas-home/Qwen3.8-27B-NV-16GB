@@ -160,9 +160,27 @@ def cuda_tag(driver_index_url: str = "") -> str:
 # Python and platform tags only, then takes the highest version string - so a
 # torch 2.10 venv is happily handed the torch2.11 build, and the failure comes
 # later as an undefined-symbol ImportError that reads like a corrupt install.
-# So the wheel is resolved here and pip is given one URL it cannot argue with.
+def get_engine_version() -> str:
+    """Resolve ExLlamaV3 target version from environment or .env file."""
+    v = os.environ.get("EXL3_VERSION") or os.environ.get("ENGINE_VERSION")
+    if not v and (ROOT / ".env").is_file():
+        try:
+            with open(ROOT / ".env", "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("#") or "=" not in line:
+                        continue
+                    k, _, val = line.partition("=")
+                    if k.strip() in ("EXL3_VERSION", "ENGINE_VERSION") and val.strip():
+                        v = val.strip().strip("'\"")
+                        break
+        except Exception:
+            pass
+    return (v or "1.4.9").strip()
+
+
 ENGINE_PACKAGE = "exllamav3"
-ENGINE_VERSION = "1.4.4"
+ENGINE_VERSION = get_engine_version()
 ENGINE_RELEASE = ("https://github.com/turboderp-org/exllamav3/releases/download/"
                   f"v{ENGINE_VERSION}/")
 

@@ -25,7 +25,8 @@ VENV_PY = ROOT / ".venv" / "Scripts" / "python.exe"
 ENV_FILE = ROOT / ".env"
 ENV_EXAMPLE = ROOT / ".env.example"
 SERVE = ROOT / "tools" / "serve_openai.py"
-DEFAULT_ENGINE = "git+https://github.com/turboderp-org/exllamav3.git@v1.4.4"
+EXL3_VERSION = os.environ.get("EXL3_VERSION") or os.environ.get("ENGINE_VERSION") or "1.4.9"
+DEFAULT_ENGINE = f"git+https://github.com/turboderp-org/exllamav3.git@v{EXL3_VERSION}"
 # cu128, not the newest line: the engine's own release builds wheels for
 # cu128 and cu132 only, so torch from cu130 would mean no prebuilt engine
 # exists and every user compiles. cu128 covers Blackwell (driver 570+).
@@ -426,9 +427,11 @@ def require_engine_version() -> None:
         capture_output=True, text=True, cwd=str(ROOT),
     )
     ver = (r.stdout or "").strip() or "unknown"
-    if r.returncode != 0 or ver != "1.4.4":
+    import re
+    ver_nums = tuple(map(int, re.findall(r"\d+", ver)[:3])) if ver != "unknown" else ()
+    if r.returncode != 0 or not ver_nums or ver_nums < (1, 4, 4):
         die(
-            f"this kit requires ExLlamaV3 v1.4.4, but the venv has '{ver}'.\n"
+            f"this kit requires ExLlamaV3 >= v1.4.4, but the venv has '{ver}'.\n"
             f"Fix: delete the .venv folder and run windows\\start.bat again."
         )
 

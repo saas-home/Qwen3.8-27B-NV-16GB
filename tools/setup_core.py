@@ -32,7 +32,7 @@ ENV_FILE = ROOT / ".env"
 ENV_EXAMPLE = ROOT / ".env.example"
 
 ENGINE_PACKAGE = "exllamav3"
-ENGINE_VERSION = "1.4.4"
+from wheels import ENGINE_VERSION
 
 
 class SetupError(RuntimeError):

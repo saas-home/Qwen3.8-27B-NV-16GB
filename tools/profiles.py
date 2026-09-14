@@ -118,7 +118,7 @@ QUANTS = [
     # in the table: the formula prices it out of a 16 GB card entirely (it plans 0
     # tokens) and the bench watched it prefill 77824 at a peak of 14.578.
     Quant("3.5", 3.5, "turboderp/Qwen3.8-27B-exl3", "3.50bpw", "models/Qwen3.8-27B-EXL3-3.5bpw", 11.864, 15.3, 0.872, 0.08,  "very good", True, 77824, 41984, 14.7, 14.578),
-    Quant("3.0", 3.0, "turboderp/Qwen3.8-27B-exl3", "3.00bpw", "models/Qwen3.8-27B-EXL3-3.0bpw", 10.422, 13.8, 0.870, 0.112, "better", True, 148480, 117760, 14.7, 14.695),
+    Quant("3.0", 3.0, "turboderp/Qwen3.8-27B-exl3", "3.00bpw", "models/Qwen3.8-27B-EXL3-3.0bpw", 10.422, 13.8, 0.870, 0.112, "better", True, 204800, 204800, 14.7, 14.695),
     # 2.5bpw: weights are the fitted intercept of allocated_gib over seven contexts
     # (2026-09-06, measured) - 9.001, not the 8.3 the shard sizes suggested.
     # The tower never shows up in allocated_gib (it loads lazily), but the images-on
@@ -199,8 +199,17 @@ COMFORTABLE_CTX = 131072
 MTP_FACTOR = 17 / 16
 
 
+def is_headless() -> bool:
+    """True if running headless on Linux (no X11/Wayland display server consuming VRAM)."""
+    if sys.platform != "linux":
+        return False
+    return not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY")
+
+
 def budget_gib(total_gib: float) -> float:
-    return round(total_gib - max(1.3, 0.08 * total_gib), 1)
+    # On headless servers without a GUI display server, driver + CUDA runtime overhead is only ~0.3 GB
+    headroom = 0.3 if is_headless() else max(1.3, 0.08 * total_gib)
+    return round(total_gib - headroom, 1)
 
 
 def kv_gib(ctx: int, cache: str) -> float:
@@ -615,7 +624,7 @@ def write_env(path: Path, updates: dict[str, str]) -> None:
 
 def env_updates(o: dict, gpu_name: str) -> dict[str, str]:
     model_id = Path(o["model_dir"]).name.lower()
-    return {
+    updates = {
         "PROFILE": f"{o['quant']}bpw-{round(o['ctx'] / 1000)}k",
         "PROFILE_GPU": gpu_name.replace("=", " ").split("  [")[0] or "unknown",
         "MODEL_DIR": o["model_dir"],
@@ -629,6 +638,18 @@ def env_updates(o: dict, gpu_name: str) -> dict[str, str]:
         "GPU_MEM_GB": f"{min(o['budget'], o['need'] + 1.5):.1f}",
         "VISION": "auto" if o["vision"] else "off",
     }
+    # RTX 4070 Ti SUPER and 16 GB cards running 3.0bpw high-context optimization:
+    is_4070_ti_super = any(x in gpu_name.lower() for x in ("4070 ti super", "4070 tis", "4070-ti-super"))
+    if is_4070_ti_super or (o["quant"] == "3.0" and o["ctx"] >= 190000):
+        updates["GPU_MEM_GB"] = "15.7" if is_headless() else "15.6"
+        updates["EXL3_VISION_PINNED"] = "1"
+        updates["DRAFT"] = "none"
+        updates["DRAFT_TOKENS"] = "0"
+        updates["MAX_TOKENS"] = "128000"
+        updates["REASONING_EFFORT"] = "high"
+        updates["CPU_CACHE_GB"] = "24"
+        updates["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    return updates
 
 
 # ------------------------------------------------------------------- UI ------

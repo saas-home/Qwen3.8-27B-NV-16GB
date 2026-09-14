@@ -204,8 +204,14 @@ _load_env() {
 _load_env
 
 # .env is sourced as shell vars; the model-download subprocess needs the HF
-# token in its environment, so export it if set.
+# token in its environment, so export it if set. Export ExLlamaV3 config
+# variables so the engine reads them before loading the model.
 if [ -n "${HF_TOKEN:-}" ]; then export HF_TOKEN; fi
+if [ -n "${EXL3_VISION_PINNED:-}" ]; then export EXL3_VISION_PINNED; fi
+if [ -n "${EXL3_VERSION:-}" ]; then export EXL3_VERSION; fi
+if [ -n "${PYTORCH_CUDA_ALLOC_CONF:-}" ]; then export PYTORCH_CUDA_ALLOC_CONF; fi
+if [ -n "${MAX_TOKENS:-}" ]; then export MAX_TOKENS; fi
+if [ -n "${REASONING_EFFORT:-}" ]; then export REASONING_EFFORT; fi
 
 # --- bootstrap: build the venv + install the engine on first run ----------
 # Re-enters if the venv is missing OR the install is incomplete (e.g. a
@@ -308,11 +314,9 @@ if [ ! -x .venv/bin/python ] \
         _engine_src="."
         _engine_note="local engine repo — compiling CUDA kernels"
     else
-        # Pinned to the v1.4.4 tag. PyPI has no 1.4.4 wheel (it jumps
-        # 1.4.2 -> 1.4.5), so the tag is the only way to get exactly v1.4.4,
-        # which this quant needs (quantized vision tower).
-        _engine_src="${EXL3_REPO:-git+https://github.com/turboderp-org/exllamav3.git@v1.4.4}"
-        _engine_note="exllamav3 engine — clone + compile CUDA kernels"
+        _want_ver="${EXL3_VERSION:-1.4.9}"
+        _engine_src="${EXL3_REPO:-git+https://github.com/turboderp-org/exllamav3.git@v${_want_ver}}"
+        _engine_note="exllamav3 engine v${_want_ver} — clone + compile CUDA kernels"
     fi
     if [ -n "${TORCH_CUDA_ARCH_LIST:-}" ]; then
         export TORCH_CUDA_ARCH_LIST
@@ -356,13 +360,14 @@ PYTHON=.venv/bin/python
 export PATH="$(pwd)/.venv/bin:$PATH"
 
 # --- engine version guard ---------------------------------------------------
-# v1.4.4 is mandatory: this quant ships a quantized vision tower (vision_bits 3),
-# which older builds decode incorrectly, and stock v1.4.4 is what this kit is
+# v1.4.4+ is mandatory: this quant ships a quantized vision tower (vision_bits 3),
+# which older builds decode incorrectly, and stock v1.4.4+ is what this kit is
 # validated against.
-if ! "$PYTHON" -c 'import sys; from exllamav3.version import __version__ as v; sys.exit(0 if v == "1.4.4" else (print(" !! unexpected exllamav3 version:", v) or 1))' 2>/dev/null; then
+_want_ver="${EXL3_VERSION:-1.4.9}"
+if ! "$PYTHON" -c 'import sys; from exllamav3.version import __version__ as v; sys.exit(0 if tuple(map(int, v.split(".")[:3])) >= (1, 4, 4) else (print(" !! unexpected exllamav3 version:", v) or 1))' 2>/dev/null; then
     _gotver="$("$PYTHON" -c 'from exllamav3.version import __version__; print(__version__)' 2>/dev/null || echo unknown)"
-    echo "ERROR: this kit requires ExLlamaV3 v1.4.4, but the venv has '$_gotver'." >&2
-    echo "Fix: EXL3_REPO=git+https://github.com/turboderp-org/exllamav3.git@v1.4.4 then rm -rf .venv && ./start.sh" >&2
+    echo "ERROR: this kit requires ExLlamaV3 >= v1.4.4 (configured: ${_want_ver}), but the venv has '$_gotver'." >&2
+    echo "Fix: set EXL3_VERSION=${_want_ver} in .env or run: EXL3_VERSION=${_want_ver} ./start.sh" >&2
     exit 1
 fi
 
@@ -466,6 +471,17 @@ cmd=("$PYTHON" -u tools/serve_openai.py
      --cache_size "$CONTEXT_SIZE"
      --grid_size "$GPU_MEM_GB")
 
+# Pass vision mode to the server. VISION=off disables the vision tower;
+# auto (default) loads it if VRAM allows.
+case "${VISION:-auto}" in
+    0|false|no|off|none)  cmd+=(--vision off) ;;
+    auto)                 cmd+=(--vision auto) ;;
+    *) echo "VISION=${VISION:-auto} is not auto/off - using 'auto'" >&2; cmd+=(--vision auto) ;;
+esac
+if [ -n "${IMAGE_MAX_PIXELS:-}" ]; then
+    cmd+=(--image_max_pixels "$IMAGE_MAX_PIXELS")
+fi
+
 case "$CACHE_QUANT" in
     none|[2-8]|[2-8],[2-8]) ;;
     *)  echo "CACHE_QUANT must be none, 2-8 or k_bits,v_bits (got: $CACHE_QUANT)" >&2; exit 1 ;;
@@ -481,9 +497,13 @@ case "$DRAFT" in
         exit 1
         ;;
 esac
+if [ -n "${DRAFT_TOKENS:-}" ] && [ "$DRAFT_TOKENS" != "0" ]; then
+    cmd+=(--draft_tokens "$DRAFT_TOKENS")
+fi
 if [ "$CPU_CACHE_GB" != "0" ]; then
     cmd+=(--cpu_cache_size "$CPU_CACHE_GB")
 fi
+[ -n "${EXL3_VISION_PINNED:-}" ] && export EXL3_VISION_PINNED
 
 # --- the harness ----------------------------------------------------------
 # The model server serves /v1 and a small page at / saying where things are.
@@ -516,6 +536,13 @@ if [ "$UI" != "no" ]; then
     # replaces the process without running traps - deliberately, because the
     # harness survives the switch and dsh.py notices the port is already held.
     trap 'kill "$DSH_PID" 2>/dev/null || true' EXIT INT TERM
+fi
+
+if [ -z "${AFFINITY:-}" ] && grep -q "AMD Ryzen 9 7950X3D" /proc/cpuinfo 2>/dev/null; then
+    AFFINITY="0-7,16-23"
+fi
+if [ -n "${AFFINITY:-}" ] && command -v taskset >/dev/null 2>&1; then
+    cmd=(taskset -c "$AFFINITY" "${cmd[@]}")
 fi
 
 echo "Starting: ${cmd[*]}"
