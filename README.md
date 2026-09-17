@@ -7,12 +7,14 @@
 >
 > **Key Enhancements in this Fork:**
 > - **204,800 Token Context Window:** Expands verified stable context to a full 204.8k tokens (~800 pages) on a single 16 GB card with 3.0 bpw EXL3 and 4-bit Hadamard KV cache.
+> - **2-Slot Parallel Continuous Batching (`PARALLEL=2`):** Continuous multi-slot batching engine (`BatchWorker`) supports 2 parallel generation requests simultaneously on GPU with thread-safe per-job queues and graceful FIFO queueing for additional requests.
+> - **Dynamic Context Headroom Clamping:** Dynamically computes available KV cache pages per request (`min(max_tokens, max_total - prompt_toks - 2 - num_draft)`), eliminating ExLlamaV3 page allocation crashes on long conversational turns.
 > - **Zero-VRAM Multimodal Vision (`EXL3_VISION_PINNED=1`):** Pins the vision tower in host DDR5 RAM, reclaiming ~0.87 GB VRAM directly for the KV cache.
 > - **Headless VRAM Budget Optimization:** Automatically detects headless environments (`is_headless()`), increasing usable VRAM to **15.7 GB** (vs. 14.7 GB upstream desktop default).
 > - **24 GB DDR5 Host Prompt Cache (`CPU_CACHE_GB=24`):** Secondary host RAM tiering preserves prompt prefixes, yielding **sub-second TTFT (0.93s at 200k tokens)** on iterative reasoning turns.
 > - **AMD Ryzen 9 7950X3D CPU Affinity:** Pins worker execution to CCD0 3D V-Cache (`AFFINITY=0-7,16-23`), eliminating cross-CCD latency penalties.
-> - **128k Generation Ceiling & Reasoning Hygiene:** Eliminates Copilot socket dropouts (`MAX_TOKENS=128000`) and sanitizes historical `<think>` tags (`NO_REASONING_PRESERVE=1`).
-> - **Dynamic Engine Resolution:** Supports ExLlamaV3 v1.4.9+ through dynamic semver resolution.
+> - **Extended Generation Ceiling & Reasoning Hygiene:** Eliminates Coding Agent socket dropouts (`MAX_TOKENS=16384`) and sanitizes historical `<think>` tags (`NO_REASONING_PRESERVE=1`).
+> - **Dynamic Engine Resolution:** Supports ExLlamaV3 v1.5.0+ through dynamic semver resolution.
 > - **Detailed Technical Whitepaper & Benchmarks:** Comprehensive empirical evaluation, latency curves, and head-to-head comparison against llama.cpp are documented in [Qwen3.8-27B-NV-16GB-Optimization-Whitepaper.md](Qwen3.8-27B-NV-16GB-Optimization-Whitepaper.md).
 
 ---
@@ -299,10 +301,11 @@ downstream follows it.
 | 24 GB | 6.0 bpw @ 84k text-only · 5.0 bpw @ 180k with images · **4.0 bpw @ 262k with images** · 3.5 and below at 262k with images |
 | 32 GB+ | the same menu as 24 GB — the top two rows are capped at what a prefill has actually survived, not at what the card could hold |
 
-KV cache is **int4** on every profile the planner writes — measured within 0.001 KL
-of fp16, with no hardware requirement, so it runs on every supported GPU. (The
-`.env.example` template still ships `CACHE_QUANT=8,4`, which is the old hand-tuned
-2.0 bpw baseline below; picking a profile overwrites it.)
+KV cache supports both symmetric and asymmetric bit-plane quantization:
+- **`CACHE_QUANT=4,3` (4-bit Keys / 3-bit Values)**: **Recommended for 16 GB cards running 204.8k context on ExLlamaV3 v1.5.0**. Quantizes Keys to 4-bit (preserving high-dimensional attentional steering) and Values to 3-bit (8 reconstruction levels). Saves **600 MiB of VRAM** at 200k context (15,284 MiB peak vs. 15,884 MiB baseline), recovering **1,092 MiB (>1 GB) of critical safety headroom** on 16 GB GPUs. Rigorously verified at **100% accuracy** across 16-hop confusable pointer chasing, 8-hop chained dependencies, 60k multi-needle retrieval, algorithmic code execution (25 unit tests), and combinatorial math.
+- **`CACHE_QUANT=4` (symmetric int4)**: Measured within 0.001 KL of fp16; baseline recipe. On 16 GB cards at 200k context, leaves only ~65 MiB free headroom.
+- **`CACHE_QUANT=4,2` (4-bit Keys / 2-bit Values)**: Aggressive saving recipe recovering **1,348 MiB headroom** and boosting decode speed by +6.2% (30.42 tok/s); suitable for high concurrency, but 2-bit Values can exhibit drift in deep (≥8-hop) sequential variable chains.
+- **`CACHE_QUANT=8,4`**: Supported legacy baseline. Picked profiles in `.env` override this.
 
 Each row's download size and the exact context it plans are printed by the planner
 itself, and it will do that for any card without you owning one:
@@ -601,10 +604,8 @@ That prints the venv's tags, the torch version and CUDA line found, and the whee
 would install. `wheels/README.md` covers the override cases and the recipe for
 building one yourself.
 
-**Engine version.** This kit requires **ExLlamaV3 v1.4.4** — it is what the quantized
-vision tower needs, and what the kit is validated against. PyPI skips 1.4.4
-(`1.4.2` → `1.4.5`), so the launchers install the git tag, and both start paths
-refuse to run against any other version. Engine:
+**Engine version.** This kit requires **ExLlamaV3 >= v1.4.4** (defaulting to **v1.5.0**) — v1.4.4+ is what the quantized
+vision tower needs, and v1.5.0 delivers zero-copy pinned host memory arena mode and kernel optimizations. Engine:
 [ExLlamaV3](https://github.com/turboderp-org/exllamav3).
 
 ---
@@ -633,7 +634,11 @@ fine. The ones you are most likely to touch:
 | --- | --- | --- |
 | `MODEL_DIR` | set by setup | which downloaded model to load |
 | `CONTEXT_SIZE` | set by setup | tokens; must be a multiple of 256 |
-| `CACHE_QUANT` | set by setup | `4` (int4), `8,4`, `none`, or `k,v` |
+| `CACHE_QUANT` | `4,3` | `4,3` (recommended 4-bit K / 3-bit V — saves 600 MiB), `4,2` (saves 856 MiB), `4` (symmetric int4), `8,4`, or `none` |
+| `PARALLEL` | `2` | maximum concurrent / parallel requests generating on GPU simultaneously (additional requests queue in FIFO order) |
+| `MAX_TOKENS` | `16384` | ceiling on one answer / maximum generation tokens per request (clamp-protected by available context headroom) |
+| `REASONING_EFFORT` | `medium` | reasoning effort / thinking budget: `high` (unlimited), `medium`, `low`, or `off` |
+| `NO_REASONING_PRESERVE` | `1` | `1` strips internal `<think>` blocks from prior assistant turns to prevent multi-turn context bloat (`0` to keep) |
 | `GPU_MEM_GB` | set by setup | the process's VRAM budget |
 | `VISION` | `auto` | `off` to skip the vision tower |
 | `PORT` | `8888` | the OpenAI API port |

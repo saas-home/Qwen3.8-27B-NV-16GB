@@ -12,7 +12,7 @@ This is a serving kit for **Qwen/Qwen3.8-27B** in turboderp's EXL3 quants, desig
 - **Profile picker**: `tools/profiles.py` detects GPU VRAM and selects the best quant/context/KV-cache combination
 - **Server**: `tools/serve_openai.py` serves the OpenAI-compatible API on `/v1/chat/completions`
 - **Chat UI**: [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) runs as a second Node process on port 3080
-- **Engine**: ExLlamaV3 v1.4.4, prebuilt wheels when available; source build fallback
+- **Engine**: ExLlamaV3 v1.5.0 (>= v1.4.4 supported), prebuilt wheels when available; source build fallback
 
 ## Directory Structure
 

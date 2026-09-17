@@ -25,7 +25,7 @@ VENV_PY = ROOT / ".venv" / "Scripts" / "python.exe"
 ENV_FILE = ROOT / ".env"
 ENV_EXAMPLE = ROOT / ".env.example"
 SERVE = ROOT / "tools" / "serve_openai.py"
-EXL3_VERSION = os.environ.get("EXL3_VERSION") or os.environ.get("ENGINE_VERSION") or "1.4.9"
+EXL3_VERSION = os.environ.get("EXL3_VERSION") or os.environ.get("ENGINE_VERSION") or "1.5.0"
 DEFAULT_ENGINE = f"git+https://github.com/turboderp-org/exllamav3.git@v{EXL3_VERSION}"
 # cu128, not the newest line: the engine's own release builds wheels for
 # cu128 and cu132 only, so torch from cu130 would mean no prebuilt engine
@@ -1344,6 +1344,8 @@ def server_command(cfg: dict[str, str]):
         cmd.extend(["--cache_quant", cache_quant])
     if cpu_cache not in ("0", "0.0", ""):
         cmd.extend(["--cpu_cache_size", cpu_cache])
+    if cfg.get("PARALLEL"):
+        cmd.extend(["--parallel", str(cfg["PARALLEL"])])
     cmd.extend(["--vision", vision_mode, "--image_max_pixels", image_max_pixels])
     ui = ui_mode(cfg)
     cmd.extend(["--ui", "off" if ui == "no" else "on"])

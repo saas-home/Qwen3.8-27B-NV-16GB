@@ -212,6 +212,7 @@ if [ -n "${EXL3_VERSION:-}" ]; then export EXL3_VERSION; fi
 if [ -n "${PYTORCH_CUDA_ALLOC_CONF:-}" ]; then export PYTORCH_CUDA_ALLOC_CONF; fi
 if [ -n "${MAX_TOKENS:-}" ]; then export MAX_TOKENS; fi
 if [ -n "${REASONING_EFFORT:-}" ]; then export REASONING_EFFORT; fi
+if [ -n "${PARALLEL:-}" ]; then export PARALLEL; fi
 
 # --- bootstrap: build the venv + install the engine on first run ----------
 # Re-enters if the venv is missing OR the install is incomplete (e.g. a
@@ -314,7 +315,7 @@ if [ ! -x .venv/bin/python ] \
         _engine_src="."
         _engine_note="local engine repo — compiling CUDA kernels"
     else
-        _want_ver="${EXL3_VERSION:-1.4.9}"
+        _want_ver="${EXL3_VERSION:-1.5.0}"
         _engine_src="${EXL3_REPO:-git+https://github.com/turboderp-org/exllamav3.git@v${_want_ver}}"
         _engine_note="exllamav3 engine v${_want_ver} — clone + compile CUDA kernels"
     fi
@@ -363,7 +364,7 @@ export PATH="$(pwd)/.venv/bin:$PATH"
 # v1.4.4+ is mandatory: this quant ships a quantized vision tower (vision_bits 3),
 # which older builds decode incorrectly, and stock v1.4.4+ is what this kit is
 # validated against.
-_want_ver="${EXL3_VERSION:-1.4.9}"
+_want_ver="${EXL3_VERSION:-1.5.0}"
 if ! "$PYTHON" -c 'import sys; from exllamav3.version import __version__ as v; sys.exit(0 if tuple(map(int, v.split(".")[:3])) >= (1, 4, 4) else (print(" !! unexpected exllamav3 version:", v) or 1))' 2>/dev/null; then
     _gotver="$("$PYTHON" -c 'from exllamav3.version import __version__; print(__version__)' 2>/dev/null || echo unknown)"
     echo "ERROR: this kit requires ExLlamaV3 >= v1.4.4 (configured: ${_want_ver}), but the venv has '$_gotver'." >&2
@@ -502,6 +503,9 @@ if [ -n "${DRAFT_TOKENS:-}" ] && [ "$DRAFT_TOKENS" != "0" ]; then
 fi
 if [ "$CPU_CACHE_GB" != "0" ]; then
     cmd+=(--cpu_cache_size "$CPU_CACHE_GB")
+fi
+if [ -n "${PARALLEL:-}" ]; then
+    cmd+=(--parallel "$PARALLEL")
 fi
 [ -n "${EXL3_VISION_PINNED:-}" ] && export EXL3_VISION_PINNED
 

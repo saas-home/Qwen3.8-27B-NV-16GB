@@ -176,7 +176,7 @@ def get_engine_version() -> str:
                         break
         except Exception:
             pass
-    return (v or "1.4.9").strip()
+    return (v or "1.5.0").strip()
 
 
 ENGINE_PACKAGE = "exllamav3"
