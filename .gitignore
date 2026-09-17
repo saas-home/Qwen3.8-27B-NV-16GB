@@ -98,6 +98,9 @@ node_modules/
 .coverage
 htmlcov/
 
+# Test outputs, run benchmarks, and local execution dumps
+tests/results/
+
 # Build output, if anything is ever built here.
 dist/
 build/

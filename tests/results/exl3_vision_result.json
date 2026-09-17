@@ -1,9 +1,0 @@
-{
-  "url": "http://127.0.0.1:8888/v1/chat/completions",
-  "model": "qwen3.8-27b-exl3-3.0bpw",
-  "ttft_ms": 12230.12,
-  "tokens": 540,
-  "decode_tok_s": 42.96,
-  "total_time_s": 24.78,
-  "response": "\n\n# Invoice Summary\n\n**Document Type:** Invoice\n**Invoice Number:** #1024\n**Invoice Date:** *Not printed on the document* (the footer references an \"invoice date\" for payment terms, but no specific date is shown)\n\n## Parties & Payment Details\n\n| Field | Details |\n|---|---|\n| **Billed To** | Really Great Company |\n| **Pay To** | Avery Davis |\n| **Address** | 123 Anywhere St., Any City |\n| **Phone** | 123-456-7890 |\n| **Bank** | Really Great Bank |\n| **Account Name** | John Smith |\n| **BSB** | 000-000 |\n| **Account Number** | 0000 0000 |\n\n## Line Items\n\n| Description | Rate | Hours | Amount |\n|---|---|---|---|\n| Content Plan | $50/hr | 4 | $200.00 |\n| Copy Writing | $50/hr | 2 | $100.00 |\n| Website Design | $50/hr | 5 | $250.00 |\n| Website Development | $100/hr | 5 | $500.00 |\n| SEO | $50/hr | 4 | $200.00 |\n\n## Totals\n\n- **Sub-Total:** $1,250.00\n- **Package Discount (30%):** $375.00\n- **TOTAL:** **$875.00**\n\n## Payment Terms & Notes\n- Payment is required within **14 business days** of the invoice date.\n- Remittance should be sent to: **hello@reallygreatsite.com**\n- Closing note: \"Thank you for your business.\"\n\n### Verification\nThe arithmetic checks out: line items sum to $1,250.00; a 30% discount equals $375.00; and $1,250.00 \u2212 $375.00 = **$875.00**, matching the stated total.\n\n**Key takeaway:** This is a services invoice (#1024) from \"Really Great Company\" to Avery Davis for five billable services (content, copywriting, design, development, SEO) at mixed hourly rates, with a 30% package discount bringing"
-}

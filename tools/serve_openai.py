@@ -47,7 +47,7 @@ Launch (from repo root; 16 GB NVIDIA recipe):
   .venv/bin/python tools/serve_openai.py \
       -m models/Qwen3.8-27B-EXL3-2.0bpw -gs 14.7 -cs 199936 -cq 8,4 --port 8888
 """
-import argparse, asyncio, json, os, re, sys, time, threading, uuid
+import argparse, asyncio, json, os, re, sys, time, threading, uuid, queue
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from aiohttp import web
 
@@ -56,7 +56,76 @@ DRAFT_DIR = "mtp"   # default drafting method: MTP head (no external draft model
 PORT = 8888
 MODEL_ID = "qwen3.8-27b-exl3-2.0bpw"
 
-gen_lock = threading.Lock()          # serialize generation (batch-1 draft)
+PARALLEL = int(os.environ.get("PARALLEL", 2))
+concurrency_semaphore = threading.Semaphore(PARALLEL)
+batch_worker = None
+
+
+class BatchWorker:
+    """Continuous batching worker that drives generator.iterate() across concurrent jobs."""
+    def __init__(self, generator):
+        self.generator = generator
+        self.lock = threading.Lock()
+        self.has_work = threading.Event()
+        self.subscribers = {}  # job -> queue.Queue
+        self.running = True
+        self.thread = threading.Thread(target = self._run, daemon = True)
+        self.thread.start()
+
+    def enqueue(self, job):
+        q = queue.Queue()
+        with self.lock:
+            self.subscribers[job] = q
+            self.generator.enqueue(job)
+            self.has_work.set()
+        return q
+
+    def cancel(self, job):
+        with self.lock:
+            if job in self.subscribers:
+                del self.subscribers[job]
+            self.generator.cancel(job)
+
+    def active_count(self):
+        with self.lock:
+            return len(self.subscribers)
+
+    def _run(self):
+        while self.running:
+            self.has_work.wait()
+            with self.lock:
+                if not self.subscribers:
+                    self.has_work.clear()
+                    continue
+                try:
+                    results = self.generator.iterate()
+                except Exception as e:
+                    import traceback
+                    print(f" !! [{time.strftime('%H:%M:%S')}] batch worker error: {type(e).__name__}: {e}\n{traceback.format_exc()}", flush = True)
+                    for q in list(self.subscribers.values()):
+                        q.put({"stage": "error", "error": e, "eos": True})
+                    self.subscribers.clear()
+                    self.has_work.clear()
+                    continue
+
+                for r in results:
+                    job = r.get("job")
+                    q = self.subscribers.get(job)
+                    if q:
+                        q.put(r)
+                    if r.get("eos"):
+                        if job in self.subscribers:
+                            del self.subscribers[job]
+
+                if not self.subscribers or self.generator.num_remaining_jobs() == 0:
+                    if self.subscribers and self.generator.num_remaining_jobs() == 0:
+                        for q in list(self.subscribers.values()):
+                            q.put({"stage": "streaming", "text": "", "eos": True, "eos_reason": "eos"})
+                        self.subscribers.clear()
+                    self.has_work.clear()
+
+
+gen_lock = threading.Lock()          # fallback lock for vision image embedding
 vision = {"model": None, "max_pixels": 1048576, "reason": "not loaded"}
 IMAGE_TRIPLE = "<|vision_start|><|image_pad|><|vision_end|>"   # what the chat template emits per image
 stats_lock = threading.Lock()
@@ -610,7 +679,8 @@ def generate_full(generator, tokenizer, messages, max_tokens, temperature,
                              "remove the image or restart with VISION=auto")
         images = [decode_image(u) for u in image_urls]
         # GPU work: keep it out of the way of a running generation.
-        with gen_lock:
+        lock = batch_worker.lock if batch_worker is not None else gen_lock
+        with lock:
             embeddings = [vm.get_image_embeddings(tokenizer = tokenizer, image = img)
                           for img in images]
         rendered = tokenizer.hf_render_chat_template(
@@ -631,6 +701,27 @@ def generate_full(generator, tokenizer, messages, max_tokens, temperature,
             enable_thinking = enable_thinking, tools = tools,
             **template_effort(tokenizer, reasoning_effort))
     prompt_toks = int(input_ids.shape[-1])
+    max_total = getattr(generator, "max_total_tokens", None)
+    if max_total is None and hasattr(generator, "pagetable"):
+        max_total = getattr(generator.pagetable, "max_pages", 0) * 256
+    if max_total is None:
+        max_total = stats.get("context_length")
+
+    if max_total and prompt_toks >= max_total:
+        raise ValueError(
+            f"Prompt length ({prompt_toks} tokens) exceeds context cache capacity ({max_total} tokens)"
+        )
+
+    num_draft = getattr(generator, "num_draft_tokens", 0) or 0
+    if max_total:
+        avail = max(1, max_total - prompt_toks - 2 - num_draft)
+        effective_max_tokens = min(max_tokens, avail)
+        if effective_max_tokens < max_tokens:
+            print(f" -- context headroom: clamping max_tokens {max_tokens} -> {effective_max_tokens} "
+                  f"(prompt={prompt_toks}, cache={max_total})", flush = True)
+    else:
+        effective_max_tokens = max_tokens
+
     from exllamav3.generator.sampler.presets import ComboSampler
     from exllamav3 import Job
     forced_choice = tool_choice not in (None, "auto", "none")
@@ -643,44 +734,79 @@ def generate_full(generator, tokenizer, messages, max_tokens, temperature,
         reason = "max_new_tokens"
         sampler = ComboSampler(temperature = temperature, top_k = top_k, top_p = top_p)
         stop_conditions = ["<|im_end|>", tokenizer.eos_token_id] + (stop or [])
-        job = Job(input_ids = input_ids, max_new_tokens = max_tokens,
+        job = Job(input_ids = input_ids, max_new_tokens = effective_max_tokens,
                   stop_conditions = stop_conditions,
                   sampler = sampler, seed = seed,
                   embeddings = embeddings)
         prefill_seen = 0
-        with gen_lock:
-            generator.enqueue(job)
-            while generator.num_remaining_jobs():
+        if batch_worker is not None:
+            q = batch_worker.enqueue(job)
+            while True:
                 if should_stop is not None and should_stop():
-                    generator.cancel(job)
+                    batch_worker.cancel(job)
                     reason = "cancelled"
                     break
-                for r in generator.iterate():
-                    if r.get("stage") == "prefill":
-                        curr = int(r.get("curr_progress") or 0)
-                        if curr > prefill_seen:
-                            _bump_stats(prompt=curr - prefill_seen)
-                            prefill_seen = curr
-                    elif _result_new_tokens(r):
-                        _bump_stats(completion=_result_new_tokens(r))
-                    chunk = r.get("text", "")
-                    if chunk:
-                        text += chunk
-                        if on_text is not None:
-                            on_text(chunk)
-                    if r.get("eos"):
-                        reason = r.get("eos_reason", reason)
-            if reason != "cancelled" and prefill_seen < prompt_toks:
-                _bump_stats(prompt=prompt_toks - prefill_seen)
+                try:
+                    r = q.get(timeout = 0.2)
+                except queue.Empty:
+                    continue
+
+                if r.get("stage") == "error":
+                    raise r["error"]
+
+                if r.get("stage") == "prefill":
+                    curr = int(r.get("curr_progress") or 0)
+                    if curr > prefill_seen:
+                        _bump_stats(prompt=curr - prefill_seen)
+                        prefill_seen = curr
+                elif _result_new_tokens(r):
+                    _bump_stats(completion=_result_new_tokens(r))
+
+                chunk = r.get("text", "")
+                if chunk:
+                    text += chunk
+                    if on_text is not None:
+                        on_text(chunk)
+
+                if r.get("eos"):
+                    reason = r.get("eos_reason", reason)
+                    break
+        else:
+            with gen_lock:
+                generator.enqueue(job)
+                while generator.num_remaining_jobs():
+                    if should_stop is not None and should_stop():
+                        generator.cancel(job)
+                        reason = "cancelled"
+                        break
+                    for r in generator.iterate():
+                        if r.get("stage") == "prefill":
+                            curr = int(r.get("curr_progress") or 0)
+                            if curr > prefill_seen:
+                                _bump_stats(prompt=curr - prefill_seen)
+                                prefill_seen = curr
+                        elif _result_new_tokens(r):
+                            _bump_stats(completion=_result_new_tokens(r))
+                        chunk = r.get("text", "")
+                        if chunk:
+                            text += chunk
+                            if on_text is not None:
+                                on_text(chunk)
+                        if r.get("eos"):
+                            reason = r.get("eos_reason", reason)
+
+        if reason != "cancelled" and prefill_seen < prompt_toks:
+            _bump_stats(prompt=prompt_toks - prefill_seen)
         return job
 
-    job = run_once()
-    # Forced tool_choice is a prompt nudge; at temperature > 0 the model can
-    # occasionally skip the call. One greedy retry makes it deterministic -
-    # but not after a cancel, or Stop would start a second generation.
-    if reason != "cancelled" and forced_choice and not parse_tool_calls(text, schemas)[1]:
-        temperature = 0.0
+    with concurrency_semaphore:
         job = run_once()
+        # Forced tool_choice is a prompt nudge; at temperature > 0 the model can
+        # occasionally skip the call. One greedy retry makes it deterministic -
+        # but not after a cancel, or Stop would start a second generation.
+        if reason != "cancelled" and forced_choice and not parse_tool_calls(text, schemas)[1]:
+            temperature = 0.0
+            job = run_once()
     seq = job.sequences[0]
     out_toks = int(seq.sequence_ids.seq_len - prompt_toks)
     content, calls = parse_tool_calls(text, schemas)
@@ -732,9 +858,12 @@ async def models(request):
 
 async def health(request):
     with stats_lock:
+        active = batch_worker.active_count() if batch_worker is not None else 0
         return web.json_response({
             "ok": True,
-            "busy": gen_lock.locked(),
+            "busy": active >= PARALLEL if batch_worker is not None else gen_lock.locked(),
+            "active_jobs": active,
+            "parallel": PARALLEL,
             "backend": "exl3",
             "prompt_tokens_total": stats["prompt_tokens_total"],
             "completion_tokens_total": stats["completion_tokens_total"],
@@ -1206,6 +1335,8 @@ def main():
                     help = "max request body size in MiB (aiohttp's built-in "
                            "default is 1 MiB, far too small for a full tool "
                            "set + a long transcript)")
+    ap.add_argument("--parallel", type = int, default = int(os.environ.get("PARALLEL", 2)),
+                    help = "maximum concurrent / parallel generation requests (default: 2)")
     ap.add_argument("--no-reasoning-preserve", dest = "no_reasoning_preserve", action = "store_true",
                     default = None,
                     help = "Strip internal <think>...</think> tags from prior conversational history to save context tokens (default: True)")
@@ -1238,6 +1369,11 @@ def main():
              (f" + draft {args.draft_model}{tokens_msg}" if use_draft else " (no draft)"))
           + " ...", flush = True)
     generator, tokenizer, config = build_model(argv, use_draft = use_draft)
+    global batch_worker, concurrency_semaphore, PARALLEL
+    PARALLEL = int(getattr(args, "parallel", None) or os.environ.get("PARALLEL", 2))
+    concurrency_semaphore = threading.Semaphore(PARALLEL)
+    batch_worker = BatchWorker(generator)
+    print(f" == parallel concurrency: up to {PARALLEL} requests generating simultaneously", flush = True)
     stats["context_length"] = int(args.cache_size)
     if args.vision == "auto":
         print(" == loading vision tower (images) ...", flush = True)
@@ -1275,6 +1411,7 @@ def main():
             f"  http://127.0.0.1:{args.port}/v1",
             f"  model: {MODEL_ID}"[:inner],
             "  OpenAI-compatible  |  API key: local",
+            f"  Concurrency: {PARALLEL} parallel generation slots",
             ("  Images: ON  (max %.1f MP per image)" % (vision["max_pixels"] / 1e6))
             if vision["model"] is not None else "  Images: off (text only)",
             (f"  Chat: http://127.0.0.1:{args.harness_port}/  (harness)"[:inner]
