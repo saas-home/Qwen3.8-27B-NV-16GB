@@ -610,6 +610,11 @@ def cmd_logs(a) -> int:
             return 0
 
 
+def cmd_monitor(a) -> int:
+    import monitor
+    return monitor.main() or 0
+
+
 def cmd_harness(a) -> int:
     import dsh                                              # noqa: WPS433
     cfg = read_env()
@@ -932,6 +937,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("-n", "--lines", type=int, default=40)
     s.add_argument("--file")
     s.set_defaults(func=cmd_logs)
+
+    s = sub.add_parser("monitor", help="live terminal dashboard for speed and GPU slots")
+    s.set_defaults(func=cmd_monitor)
 
     s = sub.add_parser("harness", help="the DeepSeek Harness on its own")
     s.add_argument("action", nargs="?", default="status",

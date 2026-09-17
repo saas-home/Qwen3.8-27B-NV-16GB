@@ -315,6 +315,7 @@ def build_model(argv, use_draft = True):
     args = parser.parse_args(argv)
     ccs_bytes = int(getattr(args, "cpu_cache_size", 0.0) * (1024 ** 3))
     dt = args.draft_tokens if getattr(args, "draft_tokens", 0) > 0 else None
+    ambs = getattr(args, "autosplit_max_batch_size", 1) or 1
     if use_draft:
         model, config, cache, tokenizer, draft_model, draft_config, draft_cache = \
             model_init.init(args, progress = True)
@@ -323,10 +324,15 @@ def build_model(argv, use_draft = True):
             draft_model = draft_model, draft_cache = draft_cache,
             cpu_cache_size = ccs_bytes,
             num_draft_tokens = dt,
+            max_batch_size = ambs,
         )
     else:
         model, config, cache, tokenizer = model_init.init(args, progress = True)
-        generator = Generator(model, cache, tokenizer, cpu_cache_size = ccs_bytes)
+        generator = Generator(
+            model, cache, tokenizer,
+            cpu_cache_size = ccs_bytes,
+            max_batch_size = ambs,
+        )
     return generator, tokenizer, config
 
 
@@ -859,10 +865,15 @@ async def models(request):
 async def health(request):
     with stats_lock:
         active = batch_worker.active_count() if batch_worker is not None else 0
+        gen = request.app.get("generator") if getattr(request, "app", None) else None
+        gen_active = len(gen.active_jobs) if gen and hasattr(gen, "active_jobs") else active
+        gen_pending = len(gen.pending_jobs) if gen and hasattr(gen, "pending_jobs") else 0
         return web.json_response({
             "ok": True,
             "busy": active >= PARALLEL if batch_worker is not None else gen_lock.locked(),
             "active_jobs": active,
+            "gpu_active_jobs": gen_active,
+            "gpu_pending_jobs": gen_pending,
             "parallel": PARALLEL,
             "backend": "exl3",
             "prompt_tokens_total": stats["prompt_tokens_total"],
@@ -1346,12 +1357,16 @@ def main():
     if args.no_reasoning_preserve is not None:
         os.environ["NO_REASONING_PRESERVE"] = "1" if args.no_reasoning_preserve else "0"
     MODEL_ID = (args.model_id or os.path.basename(os.path.normpath(args.model))).strip().lower() or MODEL_ID
+    global batch_worker, concurrency_semaphore, PARALLEL
+    PARALLEL = int(getattr(args, "parallel", None) or os.environ.get("PARALLEL", 2))
+    concurrency_semaphore = threading.Semaphore(PARALLEL)
     _cap_process_vram(args.grid_size)
     _draft = args.draft_model.lower()
     use_mtp = _draft == "mtp"
     use_draft = _draft not in ("none", "", "-")
     argv = ["-m", args.model,
-            "-gs", str(args.grid_size), "-cs", str(args.cache_size)]
+            "-gs", str(args.grid_size), "-cs", str(args.cache_size),
+            "-ambs", str(PARALLEL)]
     if use_mtp:
         argv += ["-mtp"]
     elif use_draft:
@@ -1369,9 +1384,6 @@ def main():
              (f" + draft {args.draft_model}{tokens_msg}" if use_draft else " (no draft)"))
           + " ...", flush = True)
     generator, tokenizer, config = build_model(argv, use_draft = use_draft)
-    global batch_worker, concurrency_semaphore, PARALLEL
-    PARALLEL = int(getattr(args, "parallel", None) or os.environ.get("PARALLEL", 2))
-    concurrency_semaphore = threading.Semaphore(PARALLEL)
     batch_worker = BatchWorker(generator)
     print(f" == parallel concurrency: up to {PARALLEL} requests generating simultaneously", flush = True)
     stats["context_length"] = int(args.cache_size)
