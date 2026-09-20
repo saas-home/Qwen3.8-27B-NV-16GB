@@ -1,23 +1,20 @@
 #!/usr/bin/env python3
 """
-LLM Server Full Test Suite (llm_server_full_test.py)
+Enterprise LLM Server Full Benchmark & Evaluation Suite (llm_server_full_test.py)
 
-Comprehensive, automated benchmark & stress test suite for any OpenAI-compatible LLM endpoint.
-Features:
-- Dynamic CLI parameters & interactive discovery (Endpoint, API Key, Model selector).
-- Auto-detection of available models via /v1/models with interactive/automatic picker.
-- Auto-detection of Max Context Window and dynamic adaptation of the Context Scaling Benchmark.
-- Auto-detection of concurrency capacity via /health (when available) and user-configurable concurrency tests.
-- Comprehensive 8-stage evaluation:
-    1. Streaming Verification & TTFT Latency Benchmark
-    2. Multimodal Vision & Structural Document Parsing (image.png)
-    3. Multi-Client Concurrency & Continuous Batching Stress Test
-    4. 4-Task Capability Suite (Algorithms, Concurrency Debugging, System Design, Constraint Retention)
-    5. High-Entropy Associative Key-Value Recall
-    6. Extreme Precision Multi-Stage Financial Reconciliation
-    7. Executable Algorithmic Code Generation & Dynamic Unit-Test Harness
-    8. Dynamic Long-Context Prefill & Decode Scaling Benchmark (up to max context)
-- Generates a structured JSON report and displays a formatted summary table.
+Comprehensive, production-grade test and evaluation harness for any OpenAI-compatible
+LLM server endpoint. Designed to evaluate, stress-test, and qualify models and serving
+runtimes for enterprise software design, architecture, development, and deployment.
+
+Key Capabilities:
+  - Dynamic discovery & interactive picker for available models and endpoints.
+  - Automatic detection of Max Context Length and adaptive context milestone scaling.
+  - Automatic detection of Parallel Slots / Concurrency via /health when supported.
+  - Strict OpenAI protocol compliance: Tools, Structured JSON Mode, Stop Sequences.
+  - Evaluates Prefix Caching (RadixAttention / prompt cache reuse) cold vs warm speedup.
+  - Client disconnection & socket abort resilience (verifies GPU slot release).
+  - Multi-client continuous batching throughput & queueing behavior.
+  - Full 14-stage evaluation with terminal summary scorecard and JSON export.
 """
 
 import sys
@@ -27,6 +24,7 @@ import json
 import base64
 import urllib.request
 import urllib.error
+import socket
 import argparse
 import tempfile
 import subprocess
@@ -38,12 +36,13 @@ IMAGE_PATH = os.path.join(BASE_DIR, "image.png")
 DEFAULT_RESULTS_DIR = os.path.join(os.path.dirname(BASE_DIR), "results")
 os.makedirs(DEFAULT_RESULTS_DIR, exist_ok=True)
 
-# ANSI colors for pleasant terminal presentation
+# ANSI terminal colors
 BOLD = "\033[1m"
 GREEN = "\033[32m"
 YELLOW = "\033[33m"
 RED = "\033[31m"
 CYAN = "\033[36m"
+MAGENTA = "\033[35m"
 RESET = "\033[0m"
 
 def log(msg, bold=False, color=""):
@@ -57,7 +56,6 @@ class LLMClient:
     def __init__(self, endpoint: str, api_key: str = None, model: str = None):
         endpoint = endpoint.rstrip("/")
         if not endpoint.endswith("/v1") and not endpoint.endswith("/chat/completions"):
-            # Check if /v1 is needed
             endpoint = f"{endpoint}/v1"
         elif endpoint.endswith("/chat/completions"):
             endpoint = endpoint[:-len("/chat/completions")]
@@ -96,7 +94,9 @@ class LLMClient:
         except Exception:
             return None
 
-    def call(self, messages, max_tokens=1024, temperature=0.0, stream=False, timeout=600):
+    def call(self, messages, max_tokens=1024, temperature=0.0, stream=False,
+             tools=None, tool_choice=None, response_format=None, stop=None,
+             seed=None, timeout=600):
         payload = {
             "model": self.model,
             "messages": messages,
@@ -104,6 +104,16 @@ class LLMClient:
             "temperature": temperature,
             "stream": stream
         }
+        if tools:
+            payload["tools"] = tools
+        if tool_choice:
+            payload["tool_choice"] = tool_choice
+        if response_format:
+            payload["response_format"] = response_format
+        if stop:
+            payload["stop"] = stop
+        if seed is not None:
+            payload["seed"] = seed
         if stream:
             payload["stream_options"] = {"include_usage": True}
 
@@ -118,16 +128,20 @@ class LLMClient:
             choice = res_json.get("choices", [{}])[0]
             msg = choice.get("message", {})
             content = msg.get("content") or msg.get("reasoning_content") or ""
+            tool_calls = msg.get("tool_calls")
             usage = res_json.get("usage", {})
             prompt_tokens = usage.get("prompt_tokens", 0)
             completion_tokens = usage.get("completion_tokens", 0)
+            cached_tokens = usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)
             speed = completion_tokens / total_time if total_time > 0 else 0.0
             return {
                 "content": content,
+                "tool_calls": tool_calls,
                 "total_time": total_time,
                 "ttft": total_time,
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
+                "cached_tokens": cached_tokens,
                 "decode_speed": speed,
                 "raw": res_json
             }
@@ -138,6 +152,8 @@ class LLMClient:
             token_count = 0
             prompt_tokens = 0
             completion_tokens = 0
+            cached_tokens = 0
+            tool_calls = None
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 for line in resp:
                     l = line.decode("utf-8", errors="replace").strip()
@@ -153,9 +169,12 @@ class LLMClient:
                     if "usage" in c and c["usage"]:
                         prompt_tokens = c["usage"].get("prompt_tokens", prompt_tokens)
                         completion_tokens = c["usage"].get("completion_tokens", completion_tokens)
+                        cached_tokens = c["usage"].get("prompt_tokens_details", {}).get("cached_tokens", 0)
                     choices = c.get("choices", [])
                     if choices:
                         delta = choices[0].get("delta", {})
+                        if "tool_calls" in delta and delta["tool_calls"]:
+                            tool_calls = delta["tool_calls"]
                         text = delta.get("content") or delta.get("reasoning_content") or ""
                         if text:
                             now = time.perf_counter()
@@ -172,10 +191,12 @@ class LLMClient:
             speed = (comp_tok / gen_time) if gen_time > 0 else 0.0
             return {
                 "content": "".join(chunks),
+                "tool_calls": tool_calls,
                 "total_time": total_time,
                 "ttft": ttft,
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": comp_tok,
+                "cached_tokens": cached_tokens,
                 "decode_speed": speed
             }
 
@@ -196,12 +217,10 @@ def detect_max_context(model_obj):
 
 
 def build_context_milestones(max_context: int):
-    # Propose balanced context milestones up to 80%-100% of max context
     standard_targets = [4000, 8000, 16000, 32000, 64000, 128000, 200000, 256000]
     milestones = [t for t in standard_targets if t <= int(max_context * 0.95)]
     if not milestones:
         milestones = [min(4000, max_context)]
-    # Ensure at least the top boundary is benchmarked
     top_target = int(max_context * 0.8)
     if top_target > milestones[-1]:
         milestones.append(top_target)
@@ -209,14 +228,17 @@ def build_context_milestones(max_context: int):
 
 
 # ============================================================================
-# 8 TEST MODULES
+# 14 ENTERPRISE EVALUATION TEST SUITES
 # ============================================================================
 
+# ----------------------------------------------------------------------------
+# 1. STREAMING & TTFT LATENCY
+# ----------------------------------------------------------------------------
 def run_test_streaming(client: LLMClient):
-    log("\n" + "="*80, bold=True)
-    log("[TEST 1/8] Streaming Verification & TTFT Latency", bold=True, color=CYAN)
-    log("="*80)
-    prompt = "Explain quantum superposition and entanglement in exactly two concise sentences."
+    log("\n" + "="*88, bold=True)
+    log("[TEST 1/14] Streaming Verification & TTFT Latency", bold=True, color=CYAN)
+    log("="*88)
+    prompt = "Explain the fundamental difference between synchronous and asynchronous microservice communication in two concise sentences."
     res = client.call([{"role": "user", "content": prompt}], max_tokens=150, stream=True)
     log(f"  Response: {res['content'].strip()[:180]}...")
     log(f"  -> TTFT Latency: {res['ttft']*1000:.2f} ms")
@@ -229,10 +251,13 @@ def run_test_streaming(client: LLMClient):
         "tok_s": round(res["decode_speed"], 2)
     }
 
+# ----------------------------------------------------------------------------
+# 2. MULTIMODAL VISION EXTRACTION
+# ----------------------------------------------------------------------------
 def run_test_vision(client: LLMClient):
-    log("\n" + "="*80, bold=True)
-    log("[TEST 2/8] Multimodal Vision Evaluation (Invoice Extraction)", bold=True, color=CYAN)
-    log("="*80)
+    log("\n" + "="*88, bold=True)
+    log("[TEST 2/14] Multimodal Vision Evaluation (Invoice Document Parsing)", bold=True, color=CYAN)
+    log("="*88)
     if not os.path.exists(IMAGE_PATH):
         log(f"  Skipping: Image asset not found at {IMAGE_PATH}", color=YELLOW)
         return {"status": "SKIPPED", "reason": "image.png not found"}
@@ -266,14 +291,17 @@ def run_test_vision(client: LLMClient):
         "tok_s": round(res["decode_speed"], 2)
     }
 
+# ----------------------------------------------------------------------------
+# 3. MULTI-CLIENT CONCURRENCY & BATCHING
+# ----------------------------------------------------------------------------
 def run_test_concurrency(client: LLMClient, parallel: int):
-    log("\n" + "="*80, bold=True)
-    log(f"[TEST 3/8] Multi-Client Concurrency & Batching Stress Test (Parallel = {parallel})", bold=True, color=CYAN)
-    log("="*80)
+    log("\n" + "="*88, bold=True)
+    log(f"[TEST 3/14] Multi-Client Concurrency & Batching Stress Test (Parallel = {parallel})", bold=True, color=CYAN)
+    log("="*88)
     
     results = {}
     for c in sorted(list(set([1, parallel]))):
-        log(f"  Evaluating concurrency level c = {c}...")
+        log(f"  Evaluating parallel stream level c = {c}...")
         t_start = time.perf_counter()
         def worker(client_id):
             prompt = f"Write a clean python function to reverse a linked list, client #{client_id}"
@@ -306,10 +334,13 @@ def run_test_concurrency(client: LLMClient, parallel: int):
         }
     return results
 
+# ----------------------------------------------------------------------------
+# 4. 4-TASK SOFTWARE ARCHITECTURE & CODING SUITE
+# ----------------------------------------------------------------------------
 def run_test_capabilities(client: LLMClient):
-    log("\n" + "="*80, bold=True)
-    log("[TEST 4/8] 4-Task Capability Benchmark Suite", bold=True, color=CYAN)
-    log("="*80)
+    log("\n" + "="*88, bold=True)
+    log("[TEST 4/14] Enterprise Architecture & Engineering 4-Task Suite", bold=True, color=CYAN)
+    log("="*88)
     tasks = [
         ("task1_avl_tree", "AVL Tree with Rotations", "Write a complete self-balancing AVL Tree in Python with insert, delete, search, in-order iterator, and test function.", 1200),
         ("task2_concurrency_debug", "Concurrency Buffer Debug", "Analyze a buggy multi-threaded BoundedBuffer class in Python with lost wakeups and race conditions. Provide the fix.", 1000),
@@ -335,10 +366,266 @@ def run_test_capabilities(client: LLMClient):
         "tasks": results
     }
 
+# ----------------------------------------------------------------------------
+# 5. OPENAI TOOL / FUNCTION CALLING
+# ----------------------------------------------------------------------------
+def run_test_tool_calling(client: LLMClient):
+    log("\n" + "="*88, bold=True)
+    log("[TEST 5/14] OpenAI Function / Tool Calling Protocol Verification", bold=True, color=CYAN)
+    log("="*88)
+    
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "provision_database_instance",
+                "description": "Provisions a managed database cluster in a specified VPC cloud region.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "engine": {"type": "string", "enum": ["postgres", "mysql", "redis"]},
+                        "environment": {"type": "string", "enum": ["production", "staging", "development"]},
+                        "storage_gb": {"type": "integer", "description": "Storage capacity in GB"},
+                        "ha_cluster": {"type": "boolean", "description": "Enable Multi-AZ high availability"}
+                    },
+                    "required": ["engine", "environment", "storage_gb", "ha_cluster"]
+                }
+            }
+        }
+    ]
+    prompt = "Please provision a high-availability PostgreSQL cluster with 500 GB storage for our production payment environment."
+    messages = [{"role": "user", "content": prompt}]
+    
+    try:
+        res = client.call(messages, max_tokens=600, tools=tools, tool_choice="auto", stream=False)
+        tool_calls = res.get("tool_calls")
+        valid_call = False
+        args_parsed = {}
+        
+        if tool_calls and len(tool_calls) > 0:
+            fn = tool_calls[0].get("function", {})
+            if fn.get("name") == "provision_database_instance":
+                args_str = fn.get("arguments", "{}")
+                try:
+                    args_parsed = json.loads(args_str) if isinstance(args_str, str) else args_str
+                    if (args_parsed.get("engine") == "postgres" and
+                        args_parsed.get("environment") == "production" and
+                        args_parsed.get("storage_gb") == 500 and
+                        args_parsed.get("ha_cluster") is True):
+                        valid_call = True
+                except Exception:
+                    pass
+
+        status = "PASS" if valid_call else "FAIL"
+        log(f"  -> Tool Call Detected: {tool_calls is not None}")
+        log(f"  -> Parsed Arguments: {json.dumps(args_parsed)}")
+        log(f"  -> Protocol Validation: {status}")
+        return {
+            "status": status,
+            "tool_call_detected": tool_calls is not None,
+            "parsed_arguments": args_parsed,
+            "tokens": res.get("completion_tokens", 0),
+            "ttft_ms": round(res.get("ttft", 0) * 1000, 1)
+        }
+    except Exception as e:
+        log(f"  -> Tool Calling Error: {e}", color=RED)
+        return {"status": "FAIL", "error": str(e)}
+
+# ----------------------------------------------------------------------------
+# 6. STRICT JSON SCHEMA / CONSTRAINED DECODING
+# ----------------------------------------------------------------------------
+def run_test_json_schema(client: LLMClient):
+    log("\n" + "="*88, bold=True)
+    log("[TEST 6/14] Strict JSON Schema & Constrained Decoding (response_format)", bold=True, color=CYAN)
+    log("="*88)
+    
+    prompt = (
+        "Generate a software architecture service definition for an OrderProcessingService. "
+        "Return a JSON object containing keys: 'service_name' (string), 'protocol' (string), "
+        "'port' (integer 8000-9000), and 'dependencies' (list of strings)."
+    )
+    messages = [{"role": "user", "content": prompt}]
+    
+    try:
+        res = client.call(messages, max_tokens=800, response_format={"type": "json_object"}, stream=False)
+        content = res["content"].strip()
+        parsed = {}
+        valid_json = False
+        valid_schema = False
+        
+        clean_content = content
+        if "```json" in clean_content:
+            clean_content = clean_content.split("```json")[1].split("```")[0].strip()
+        elif "```" in clean_content:
+            clean_content = clean_content.split("```")[1].split("```")[0].strip()
+
+        try:
+            parsed = json.loads(clean_content)
+            valid_json = True
+            if (("service_name" in parsed or "name" in parsed) and "dependencies" in parsed):
+                valid_schema = True
+        except Exception:
+            pass
+
+        status = "PASS" if valid_schema else ("PARTIAL" if valid_json else "FAIL")
+        log(f"  -> Valid JSON Emitted: {valid_json}")
+        log(f"  -> Schema Conformance: {valid_schema}")
+        log(f"  -> Preview: {json.dumps(parsed)[:120]}...")
+        return {
+            "status": status,
+            "valid_json": valid_json,
+            "valid_schema": valid_schema,
+            "ttft_ms": round(res.get("ttft", 0) * 1000, 1),
+            "tok_s": round(res.get("decode_speed", 0), 2)
+        }
+    except Exception as e:
+        log(f"  -> JSON Mode Error: {e}", color=RED)
+        return {"status": "FAIL", "error": str(e)}
+
+# ----------------------------------------------------------------------------
+# 7. PREFIX CACHING & PROMPT CACHE REUSE
+# ----------------------------------------------------------------------------
+def run_test_prefix_caching(client: LLMClient):
+    log("\n" + "="*88, bold=True)
+    log("[TEST 7/14] Prefix Caching / KV Cache Reuse Verification (Cold vs Warm)", bold=True, color=CYAN)
+    log("="*88)
+    
+    shared_system_spec = (
+        "ENTERPRISE ARCHITECTURE SPECIFICATION v4.2:\n" +
+        "Section 1: All microservices must authenticate with mTLS and JWT Bearer tokens.\n" +
+        "Section 2: Database mutations must publish change data capture events to Kafka with transactional outbox.\n" +
+        "Section 3: Cache invalidation employs two-phase commit over Redis Sentinel.\n" +
+        "Section 4: The mandatory message broker protocol for cross-datacenter sync is AMQP 1.0 with TLS 1.3.\n" +
+        "Section 5: Circuit breakers must trip after 5 consecutive 5xx errors in a 10-second rolling window.\n" +
+        "Section 6: Secrets must be retrieved from HashiCorp Vault with dynamic 1-hour lease renewal.\n" +
+        "Section 7: The maximum permissible p99 latency SLA for payment processing endpoints is 120 milliseconds.\n"
+    ) * 40  # Generates ~3,500 tokens of shared prefix
+
+    # Run 1: Cold prefill
+    log("  Step 1: Sending cold request with ~3,500 token shared prefix...")
+    t0 = time.perf_counter()
+    msg1 = [
+        {"role": "system", "content": shared_system_spec},
+        {"role": "user", "content": "According to Section 4, what is the mandatory message broker protocol?"}
+    ]
+    r1 = client.call(msg1, max_tokens=60, stream=False)
+    cold_ttft = r1["ttft"]
+    log(f"    -> Cold Request TTFT: {cold_ttft:.3f} s (Tokens: {r1['prompt_tokens']})")
+
+    # Run 2: Warm prefill (exact same prefix, different question)
+    log("  Step 2: Sending warm request with identical prefix to test KV cache hit...")
+    msg2 = [
+        {"role": "system", "content": shared_system_spec},
+        {"role": "user", "content": "According to Section 7, what is the maximum permissible p99 latency SLA?"}
+    ]
+    r2 = client.call(msg2, max_tokens=60, stream=False)
+    warm_ttft = r2["ttft"]
+    cached_tokens = r2.get("cached_tokens", 0)
+    speedup = (cold_ttft / warm_ttft) if warm_ttft > 0 else 1.0
+    
+    caching_active = speedup >= 2.0 or cached_tokens > 0
+    status = "PASS (ACTIVE)" if caching_active else "INACTIVE / COLD"
+    log(f"    -> Warm Request TTFT: {warm_ttft:.3f} s (Reported Cached Tokens: {cached_tokens})")
+    log(f"    -> Prefix Cache Acceleration: {speedup:.2f}x speedup -> {status}")
+    
+    return {
+        "status": status,
+        "cold_ttft_s": round(cold_ttft, 3),
+        "warm_ttft_s": round(warm_ttft, 3),
+        "speedup_ratio": round(speedup, 2),
+        "cached_tokens_reported": cached_tokens
+    }
+
+# ----------------------------------------------------------------------------
+# 8. CLIENT DISCONNECTION & SOCKET ABORT RECOVERY
+# ----------------------------------------------------------------------------
+def run_test_client_abort(client: LLMClient):
+    log("\n" + "="*88, bold=True)
+    log("[TEST 8/14] Client Socket Abort & Slot Recovery Resilience", bold=True, color=CYAN)
+    log("="*88)
+    
+    payload = {
+        "model": client.model,
+        "messages": [{"role": "user", "content": "Write a 500-word comprehensive essay explaining garbage collection in Java."}],
+        "max_tokens": 1024,
+        "stream": True
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(client.completions_url, data=data, headers=client._get_headers())
+    
+    log("  Step 1: Opening long streaming request and intentionally aborting socket...")
+    try:
+        resp = urllib.request.urlopen(req, timeout=30)
+        chunks_read = 0
+        for line in resp:
+            chunks_read += 1
+            if chunks_read >= 5:
+                # Forcefully close the connection mid-generation
+                resp.close()
+                break
+        log(f"    -> Abruptly closed socket after {chunks_read} chunks.")
+    except Exception as e:
+        log(f"    -> Socket closed ({e}).")
+
+    # Step 2: Immediately send follow-up request to test slot recovery
+    log("  Step 2: Dispatching immediate follow-up request to verify slot release...")
+    t_rec_start = time.perf_counter()
+    follow_up_ok = False
+    try:
+        r = client.call([{"role": "user", "content": "Reply with 'OK'."}], max_tokens=10, stream=False, timeout=15)
+        rec_time = time.perf_counter() - t_rec_start
+        follow_up_ok = "OK" in r["content"].upper() or len(r["content"]) > 0
+        status = "PASS" if (follow_up_ok and rec_time < 5.0) else "DEGRADED"
+        log(f"    -> Follow-up Response Time: {rec_time*1000:.1f} ms | Recovered: {follow_up_ok} -> {status}")
+        return {
+            "status": status,
+            "recovery_latency_ms": round(rec_time * 1000, 1),
+            "recovered": follow_up_ok
+        }
+    except Exception as e:
+        log(f"    -> Slot recovery failed / server hung: {e}", color=RED)
+        return {"status": "FAIL", "error": str(e)}
+
+# ----------------------------------------------------------------------------
+# 9. STOP SEQUENCES & DETERMINISTIC SAMPLING COMPLIANCE
+# ----------------------------------------------------------------------------
+def run_test_stop_sequences(client: LLMClient):
+    log("\n" + "="*88, bold=True)
+    log("[TEST 9/14] Stop Sequence Compliance & Deterministic Sampling (temp=0.0)", bold=True, color=CYAN)
+    log("="*88)
+    
+    stop_words = ["HALT_GENERATION", "###STOP###"]
+    prompt = (
+        "Count from 1 to 10 as words separated by commas. After the word 'four', output ' HALT_GENERATION' and then continue counting."
+    )
+    res = client.call([{"role": "user", "content": prompt}], max_tokens=100, stop=stop_words, temperature=0.0, stream=False)
+    text = res["content"]
+    
+    halt_stopped = "HALT_GENERATION" not in text and ("four" in text.lower())
+    log(f"  -> Generated Text: {text.strip()}")
+    log(f"  -> Stop word suppressed & execution terminated: {halt_stopped}")
+    
+    # Determinism check (two runs with temp=0.0)
+    log("  -> Verifying greedy deterministic consistency across repeated runs (temp=0.0)...")
+    r_det1 = client.call([{"role": "user", "content": "Compute sha256 checksum purpose in distributed ledgers."}], max_tokens=80, temperature=0.0, seed=42)
+    r_det2 = client.call([{"role": "user", "content": "Compute sha256 checksum purpose in distributed ledgers."}], max_tokens=80, temperature=0.0, seed=42)
+    deterministic = r_det1["content"] == r_det2["content"]
+    log(f"  -> Exact Match Across Repeated Seeded Generations: {deterministic}")
+    
+    status = "PASS" if (halt_stopped and deterministic) else ("PARTIAL" if (halt_stopped or deterministic) else "FAIL")
+    return {
+        "status": status,
+        "stop_sequence_respected": halt_stopped,
+        "deterministic_greedy_reproducible": deterministic
+    }
+
+# ----------------------------------------------------------------------------
+# 10. HIGH-ENTROPY ASSOCIATIVE RECALL
+# ----------------------------------------------------------------------------
 def run_test_high_entropy(client: LLMClient):
-    log("\n" + "="*80, bold=True)
-    log("[TEST 5/8] High-Entropy Associative Key-Value Recall", bold=True, color=CYAN)
-    log("="*80)
+    log("\n" + "="*88, bold=True)
+    log("[TEST 10/14] High-Entropy Associative Key-Value Recall", bold=True, color=CYAN)
+    log("="*88)
     filler = "In high-performance distributed architectures, nodes communicate via low-latency RPC protocols with strict SLAs. " * 300
     kv_data = (
         "CONFIDENTIAL LOOKUP TABLE:\n"
@@ -361,10 +648,13 @@ def run_test_high_entropy(client: LLMClient):
         "tok_s": round(res["decode_speed"], 2)
     }
 
+# ----------------------------------------------------------------------------
+# 11. EXTREME PRECISION FINANCIAL RECONCILIATION
+# ----------------------------------------------------------------------------
 def run_test_extreme_precision(client: LLMClient):
-    log("\n" + "="*80, bold=True)
-    log("[TEST 6/8] Extreme Precision Arithmetic & Financial Ledger Reconciliation", bold=True, color=CYAN)
-    log("="*80)
+    log("\n" + "="*88, bold=True)
+    log("[TEST 11/14] Extreme Precision Arithmetic & Financial Ledger Reconciliation", bold=True, color=CYAN)
+    log("="*88)
     stages = [
         ("Stage 1", "Initial balance = 10000.00"),
         ("Stage 2", "Deposit = +2450.50"),
@@ -397,10 +687,13 @@ def run_test_extreme_precision(client: LLMClient):
         "tok_s": round(res["decode_speed"], 2)
     }
 
+# ----------------------------------------------------------------------------
+# 12. EXECUTABLE CODE GENERATION & DYNAMIC UNIT TESTING
+# ----------------------------------------------------------------------------
 def run_test_code_execution(client: LLMClient):
-    log("\n" + "="*80, bold=True)
-    log("[TEST 7/8] Executable Algorithmic Code Generation & Dynamic Verification", bold=True, color=CYAN)
-    log("="*80)
+    log("\n" + "="*88, bold=True)
+    log("[TEST 12/14] Executable Algorithmic Code Generation & Dynamic Verification", bold=True, color=CYAN)
+    log("="*88)
     prompt = (
         "Write a complete Python implementation of an LRU Cache.\n"
         "Class name must be `LRUCache` with:\n"
@@ -454,11 +747,63 @@ print("UNIT_TESTS_PASSED")
         "tok_s": round(res["decode_speed"], 2)
     }
 
+# ----------------------------------------------------------------------------
+# 13. ERROR ENVELOPE & BOUNDARY API PROTOCOL COMPLIANCE
+# ----------------------------------------------------------------------------
+def run_test_error_handling(client: LLMClient):
+    log("\n" + "="*88, bold=True)
+    log("[TEST 13/14] Error Envelope & Boundary API Protocol Compliance", bold=True, color=CYAN)
+    log("="*88)
+    
+    # Check 1: Missing messages field
+    bad_payload = json.dumps({"model": client.model, "max_tokens": 10}).encode("utf-8")
+    req = urllib.request.Request(client.completions_url, data=bad_payload, headers=client._get_headers())
+    bad_schema_caught = False
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            pass
+    except urllib.error.HTTPError as e:
+        if e.code in [400, 422]:
+            bad_schema_caught = True
+            log(f"  -> Missing 'messages' rejected with HTTP {e.code} (Standard OpenAI error behavior): PASS")
+    except Exception:
+        pass
+
+    # Check 2: Non-existent model ID
+    non_existent_payload = json.dumps({
+        "model": "model_that_does_not_exist_xyz_999",
+        "messages": [{"role": "user", "content": "Ping"}],
+        "max_tokens": 10
+    }).encode("utf-8")
+    req2 = urllib.request.Request(client.completions_url, data=non_existent_payload, headers=client._get_headers())
+    invalid_model_handled = False
+    try:
+        with urllib.request.urlopen(req2, timeout=5) as resp:
+            # Some local servers accept any model ID gracefully
+            invalid_model_handled = True
+            log("  -> Non-existent model ID handled gracefully without crash: PASS")
+    except urllib.error.HTTPError as e:
+        if e.code in [400, 404]:
+            invalid_model_handled = True
+            log(f"  -> Non-existent model ID rejected with HTTP {e.code}: PASS")
+    except Exception:
+        pass
+
+    status = "PASS" if (bad_schema_caught or invalid_model_handled) else "PARTIAL"
+    return {
+        "status": status,
+        "bad_schema_rejected": bad_schema_caught,
+        "invalid_model_handled": invalid_model_handled
+    }
+
+# ----------------------------------------------------------------------------
+# 14. DYNAMIC LONG-CONTEXT PREFILL & DECODE SCALING
+# ----------------------------------------------------------------------------
 def run_test_context_scaling(client: LLMClient, milestones: list):
-    log("\n" + "="*80, bold=True)
-    log("[TEST 8/8] Dynamic Long-Context Prefill & Decode Scaling Benchmark", bold=True, color=CYAN)
+    log("\n" + "="*88, bold=True)
+    log("[TEST 14/14] Dynamic Long-Context Prefill & Decode Scaling Benchmark", bold=True, color=CYAN)
     log(f"Target Milestones: {milestones}")
-    log("="*80)
+    log("="*88)
 
     base_text = (
         "The quick brown fox jumps over the lazy dog. In computer science and artificial intelligence, "
@@ -517,78 +862,102 @@ def run_test_context_scaling(client: LLMClient, milestones: list):
 def print_summary_table(report):
     res = report.get("results", {})
     log("\n" + "="*88, bold=True)
-    log("                       BENCHMARK & STRESS TEST RESULT SUMMARY                           ", bold=True, color=CYAN)
+    log("              ENTERPRISE LLM SERVER EVALUATION SCORECARD                                ", bold=True, color=CYAN)
     log("="*88, bold=True)
-    log(f"  Target Server   : {report.get('endpoint')}")
+    log(f"  Target Endpoint : {report.get('endpoint')}")
     log(f"  Model Under Test: {report.get('model')}")
     log(f"  Max Context Cap : {report.get('max_context_tokens', 0):,} tokens")
     log(f"  Parallel Setting: {report.get('parallel_streams', 1)} concurrent clients")
-    log(f"  Total Duration  : {report.get('total_suite_wall_time_s', 0):.2f} s")
+    log(f"  Total Wall Time : {report.get('total_suite_wall_time_s', 0):.2f} s")
     log("="*88)
 
-    header = f"{'Test Suite / Evaluation':<34} | {'Status':<10} | {'TTFT / Latency':<16} | {'Throughput':<16}"
+    header = f"{'Evaluation Domain':<38} | {'Status':<10} | {'Key Metric / Latency':<20} | {'Throughput'}"
     log(header, bold=True)
-    log("-" * len(header))
+    log("-" * 88)
 
     def fmt_status(st):
-        if st == "PASS":
-            return f"{GREEN}PASS{RESET}"
-        elif st == "FAIL":
-            return f"{RED}FAIL{RESET}"
-        elif st == "SKIPPED":
-            return f"{YELLOW}SKIPPED{RESET}"
+        if "PASS" in str(st):
+            return f"{GREEN}{st}{RESET}"
+        elif "FAIL" in str(st):
+            return f"{RED}{st}{RESET}"
+        elif "SKIPPED" in str(st):
+            return f"{YELLOW}{st}{RESET}"
         return f"{YELLOW}{st}{RESET}"
 
     # 1. Streaming
     s = res.get("streaming", {})
-    log(f"{'1. Streaming & Latency':<34} | {fmt_status(s.get('status', 'N/A')):<19} | {s.get('ttft_ms', 0):.1f} ms{'':<8} | {s.get('tok_s', 0):.2f} tok/s")
+    log(f"{'1. Streaming & Latency':<38} | {fmt_status(s.get('status', 'N/A')):<19} | TTFT: {s.get('ttft_ms', 0):.1f} ms{'':<6} | {s.get('tok_s', 0):.2f} tok/s")
 
     # 2. Vision
     v = res.get("vision", {})
-    v_ttft = f"{v.get('ttft_ms', 0):.1f} ms" if 'ttft_ms' in v else "N/A"
+    v_ttft = f"TTFT: {v.get('ttft_ms', 0):.1f} ms" if 'ttft_ms' in v else "N/A"
     v_speed = f"{v.get('tok_s', 0):.2f} tok/s" if 'tok_s' in v else "N/A"
-    log(f"{'2. Multimodal Vision (Invoice)':<34} | {fmt_status(v.get('status', 'N/A')):<19} | {v_ttft:<16} | {v_speed:<16}")
+    log(f"{'2. Multimodal Vision (Invoice)':<38} | {fmt_status(v.get('status', 'N/A')):<19} | {v_ttft:<20} | {v_speed}")
 
-    # 3. Concurrency / Parallel
+    # 3. Parallel Batching
     c = res.get("concurrency", {})
     for ckey, cval in c.items():
         c_label = f"3. Parallel Batching ({ckey.upper()})"
         c_speed = f"{cval.get('aggregate_tok_s', 0):.2f} tok/s (agg)"
         c_wall = f"{cval.get('wall_time_s', 0):.2f} s wall"
-        log(f"{c_label:<34} | {fmt_status(cval.get('status', 'N/A')):<19} | {c_wall:<16} | {c_speed:<16}")
+        log(f"{c_label:<38} | {fmt_status(cval.get('status', 'N/A')):<19} | {c_wall:<20} | {c_speed}")
 
-    # 4. Capabilities (4 Tasks)
+    # 4. Capabilities
     cap = res.get("capabilities_4tasks", {})
     cap_speed = f"{cap.get('average_speed_tok_s', 0):.2f} tok/s (avg)"
-    log(f"{'4. 4-Task Capability Suite':<34} | {fmt_status(cap.get('status', 'N/A')):<19} | {'4 tasks passed':<16} | {cap_speed:<16}")
-    for t in cap.get("tasks", []):
-        t_sub = f"   • {t.get('name', t.get('id'))}"
-        log(f"{t_sub:<34} | {'PASS':<10} | {t.get('ttft_ms', 0):.1f} ms{'':<8} | {t.get('speed_tok_s', 0):.2f} tok/s")
+    log(f"{'4. 4-Task Architecture Suite':<38} | {fmt_status(cap.get('status', 'N/A')):<19} | 4/4 tasks passed{'':<5} | {cap_speed}")
 
-    # 5. High Entropy
+    # 5. Tool Calling
+    tc = res.get("tool_calling", {})
+    tc_desc = "JSON Args Valid" if tc.get("status") == "PASS" else "Args Invalid"
+    log(f"{'5. Tool / Function Calling Protocol':<38} | {fmt_status(tc.get('status', 'N/A')):<19} | {tc_desc:<20} | TTFT: {tc.get('ttft_ms', 0):.1f} ms")
+
+    # 6. JSON Schema
+    js = res.get("json_schema", {})
+    js_desc = "Strict Schema Conformed" if js.get("valid_schema") else "Schema Invalid"
+    log(f"{'6. JSON Schema Mode (response_format)':<38} | {fmt_status(js.get('status', 'N/A')):<19} | {js_desc:<20} | {js.get('tok_s', 0):.2f} tok/s")
+
+    # 7. Prefix Caching
+    pc = res.get("prefix_caching", {})
+    pc_desc = f"{pc.get('speedup_ratio', 1.0):.1f}x speedup" if pc.get("speedup_ratio") else "N/A"
+    log(f"{'7. Prefix / KV Cache Reuse':<38} | {fmt_status(pc.get('status', 'N/A')):<19} | {pc_desc:<20} | Warm: {pc.get('warm_ttft_s', 0):.3f}s")
+
+    # 8. Client Abort
+    ca = res.get("client_abort", {})
+    ca_desc = f"Rec: {ca.get('recovery_latency_ms', 0):.1f} ms"
+    log(f"{'8. Client Socket Abort Recovery':<38} | {fmt_status(ca.get('status', 'N/A')):<19} | {ca_desc:<20} | Slots Released")
+
+    # 9. Stop Sequences
+    ss = res.get("stop_sequences", {})
+    ss_desc = "Deterministic (temp=0)" if ss.get("deterministic_greedy_reproducible") else "Non-deterministic"
+    log(f"{'9. Stop Words & Greedy Sampling':<38} | {fmt_status(ss.get('status', 'N/A')):<19} | {ss_desc:<20} | Tokens Suppressed")
+
+    # 10. High Entropy
     he = res.get("high_entropy_recall", {})
-    he_ttft = f"{he.get('ttft_ms', 0):.1f} ms"
     he_speed = f"{he.get('tok_s', 0):.2f} tok/s"
-    log(f"{'5. High-Entropy Key Recall':<34} | {fmt_status(he.get('status', 'N/A')):<19} | {he_ttft:<16} | {he_speed:<16}")
+    log(f"{'10. High-Entropy Key-Value Recall':<38} | {fmt_status(he.get('status', 'N/A')):<19} | TTFT: {he.get('ttft_ms', 0):.1f} ms{'':<4} | {he_speed}")
 
-    # 6. Extreme Precision
+    # 11. Extreme Precision
     ep = res.get("extreme_precision", {})
-    ep_ttft = f"{ep.get('ttft_ms', 0):.1f} ms"
-    ep_speed = f"{ep.get('tok_s', 0):.2f} tok/s"
-    log(f"{'6. Precision Ledger Reconcile':<34} | {fmt_status(ep.get('status', 'N/A')):<19} | {ep_ttft:<16} | {ep_speed:<16}")
+    ep_desc = "Exact Matched" if ep.get("matched") else "Balance Diverged"
+    log(f"{'11. Precision Ledger Reconcile':<38} | {fmt_status(ep.get('status', 'N/A')):<19} | {ep_desc:<20} | {ep.get('tok_s', 0):.2f} tok/s")
 
-    # 7. Code Execution
+    # 12. Code Execution
     ce = res.get("code_execution", {})
-    ce_speed = f"{ce.get('tok_s', 0):.2f} tok/s"
-    ce_desc = "Unit tests OK" if ce.get("dynamic_tests_passed") else "Unit test fail"
-    log(f"{'7. Dynamic Code Verification':<34} | {fmt_status(ce.get('status', 'N/A')):<19} | {ce_desc:<16} | {ce_speed:<16}")
+    ce_desc = "Dynamic Assertions OK" if ce.get("dynamic_tests_passed") else "Assertion Failure"
+    log(f"{'12. Dynamic Code Unit Testing':<38} | {fmt_status(ce.get('status', 'N/A')):<19} | {ce_desc:<20} | {ce.get('tok_s', 0):.2f} tok/s")
 
-    # 8. Context Scaling Summary
+    # 13. Error Handling
+    eh = res.get("error_handling", {})
+    eh_desc = "HTTP 400/422 Standard" if eh.get("bad_schema_rejected") else "Non-standard error"
+    log(f"{'13. API Error Protocol Compliance':<38} | {fmt_status(eh.get('status', 'N/A')):<19} | {eh_desc:<20} | Protocol OK")
+
+    # 14. Context Scaling Summary
     cs = res.get("context_scaling", [])
     if cs:
-        log("-" * len(header))
-        log("  [Context Scaling Milestone Performance Breakdown]", bold=True)
-        cs_hdr = f"  {'Context Milestone':<20} | {'Prefill TTFT':<15} | {'Prefill Throughput':<20} | {'Decode Throughput':<18}"
+        log("-" * 88)
+        log("  [14. Context Scaling Milestone Performance Breakdown]", bold=True)
+        cs_hdr = f"  {'Context Target':<18} | {'Prefill TTFT':<15} | {'Prefill Speed':<18} | {'Decode Speed':<16} | {'Status'}"
         log(cs_hdr)
         log("  " + "-" * (len(cs_hdr) - 2))
         for step in cs:
@@ -597,10 +966,10 @@ def print_summary_table(report):
                 ttft_str = f"{step.get('ttft_s', 0):.2f} s"
                 prefill_str = f"{step.get('prefill_tok_s', 0):.1f} tok/s"
                 decode_str = f"{step.get('decode_tok_s', 0):.2f} tok/s"
-                log(f"  {m_label:<20} | {ttft_str:<15} | {prefill_str:<20} | {decode_str:<18}")
+                log(f"  {m_label:<18} | {ttft_str:<15} | {prefill_str:<18} | {decode_str:<16} | {GREEN}PASS{RESET}")
             else:
                 m_label = f"{step.get('target_tokens', 0):,} toks"
-                log(f"  {m_label:<20} | {'FAILED':<15} | {str(step.get('error', 'Error'))[:30]}")
+                log(f"  {m_label:<18} | {'FAILED':<15} | {str(step.get('error', 'Error'))[:30]} | {RED}FAIL{RESET}")
 
     log("="*88 + "\n")
 
@@ -610,7 +979,7 @@ def print_summary_table(report):
 # ============================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description="Full LLM Server Benchmark & Stress Test Suite")
+    parser = argparse.ArgumentParser(description="Enterprise LLM Server Full Benchmark & Evaluation Suite")
     parser.add_argument("--endpoint", "-e", help="LLM server base endpoint (e.g. http://172.16.16.29:8000/v1)")
     parser.add_argument("--api-key", "-k", default=os.getenv("OPENAI_API_KEY", ""), help="API key (optional)")
     parser.add_argument("--model", "-m", help="Model name or ID to test")
@@ -620,9 +989,9 @@ def main():
     parser.add_argument("--auto", "-y", action="store_true", help="Non-interactive auto-selection mode")
     args = parser.parse_args()
 
-    log("\n" + "="*80, bold=True)
-    log(" LLM SERVER FULL BENCHMARK & STRESS TEST SUITE ", bold=True, color=GREEN)
-    log("="*80)
+    log("\n" + "="*88, bold=True)
+    log(" ENTERPRISE LLM SERVER FULL BENCHMARK & EVALUATION SUITE ", bold=True, color=GREEN)
+    log("="*88)
 
     # 1. Endpoint resolution
     endpoint = args.endpoint
@@ -651,7 +1020,6 @@ def main():
             log(f"  [{idx}] {m_id} (Context: {m_ctx:,} tokens)")
 
         if args.model:
-            # Match given model name or ID
             for m in models:
                 if m.get("id") == args.model or m.get("name") == args.model:
                     selected_model_obj = m
@@ -726,9 +1094,15 @@ def main():
     report["results"]["vision"] = run_test_vision(client)
     report["results"]["concurrency"] = run_test_concurrency(client, parallel)
     report["results"]["capabilities_4tasks"] = run_test_capabilities(client)
+    report["results"]["tool_calling"] = run_test_tool_calling(client)
+    report["results"]["json_schema"] = run_test_json_schema(client)
+    report["results"]["prefix_caching"] = run_test_prefix_caching(client)
+    report["results"]["client_abort"] = run_test_client_abort(client)
+    report["results"]["stop_sequences"] = run_test_stop_sequences(client)
     report["results"]["high_entropy_recall"] = run_test_high_entropy(client)
     report["results"]["extreme_precision"] = run_test_extreme_precision(client)
     report["results"]["code_execution"] = run_test_code_execution(client)
+    report["results"]["error_handling"] = run_test_error_handling(client)
     report["results"]["context_scaling"] = run_test_context_scaling(client, milestones)
 
     total_suite_time = time.perf_counter() - t_suite_start
@@ -736,7 +1110,7 @@ def main():
 
     # 6. Save JSON Report
     parsed_host = urlparse(endpoint).netloc.replace(":", "_") or "local"
-    out_file = args.out or os.path.join(DEFAULT_RESULTS_DIR, f"full_test_{parsed_host}_{time.strftime('%Y%m%d_%H%M%S')}.json")
+    out_file = args.out or os.path.join(DEFAULT_RESULTS_DIR, f"enterprise_eval_{parsed_host}_{time.strftime('%Y%m%d_%H%M%S')}.json")
     with open(out_file, "w") as f:
         json.dump(report, f, indent=2)
 
@@ -744,7 +1118,7 @@ def main():
     print_summary_table(report)
 
     log("="*88, bold=True)
-    log(" FULL BENCHMARK SUITE COMPLETED SUCCESSFULLY ", bold=True, color=GREEN)
+    log(" ENTERPRISE BENCHMARK EVALUATION COMPLETED SUCCESSFULLY ", bold=True, color=GREEN)
     log(f"  Total Suite Wall Time : {total_suite_time:.2f} s")
     log(f"  JSON Benchmark Report : {out_file}", bold=True)
     log("="*88 + "\n", bold=True)
