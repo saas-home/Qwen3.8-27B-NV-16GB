@@ -641,16 +641,23 @@ def run_test_high_entropy(client: LLMClient):
         "KEY_GAMMA_12: VAL_L1*vR5\n"
     )
     prompt = f"{filler}\n{kv_data}\n{filler}\nWhat is the exact value for KEY_BETA_99 and KEY_GAMMA_12? Answer strictly in format: KEY=VAL"
-    res = client.call([{"role": "user", "content": prompt}], max_tokens=150, stream=True)
-    content = res["content"]
+    # Increase max_tokens to 800 to allow thinking / reasoning models to complete reasoning and emit both keys
+    res = client.call([{"role": "user", "content": prompt}], max_tokens=800, stream=True)
+    content = res.get("content", "")
     m1 = "Z4#pQ8" in content
     m2 = "L1*vR5" in content
     status = "PASS" if (m1 and m2) else ("PARTIAL" if (m1 or m2) else "FAIL")
+    
+    summary_lines = [l.strip() for l in content.strip().splitlines() if l.strip()]
+    response_tail = summary_lines[-1] if summary_lines else "No response generated"
     log(f"  -> Recall: KEY_BETA_99 ({m1}), KEY_GAMMA_12 ({m2}) -> {status}")
+    log(f"  -> Model Response Tail: {response_tail[:120]}")
     log(f"  -> TTFT: {res['ttft']*1000:.1f} ms | Decode Speed: {res['decode_speed']:.2f} tok/s")
     return {
         "status": status,
         "matches": {"KEY_BETA_99": m1, "KEY_GAMMA_12": m2},
+        "model_tail": response_tail[:200],
+        "response_excerpt": content[-300:].strip() if len(content) > 300 else content.strip(),
         "ttft_ms": round(res["ttft"] * 1000, 1),
         "tok_s": round(res["decode_speed"], 2)
     }
