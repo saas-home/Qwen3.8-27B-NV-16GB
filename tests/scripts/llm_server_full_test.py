@@ -28,6 +28,7 @@ import socket
 import argparse
 import tempfile
 import subprocess
+import uuid
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
 
@@ -810,39 +811,50 @@ def run_test_context_scaling(client: LLMClient, milestones: list):
         "large language models utilize transformer architectures with multi-head self-attention mechanisms "
         "to process sequential data efficiently. Memory bandwidth and compute capacity determine inference speed. "
     )
-    header = f"{'Target Ctx':>12} | {'Actual Prompt':>14} | {'TTFT (s)':>10} | {'Prefill (t/s)':>14} | {'Decode (t/s)':>14} | {'Gen Toks':>9} | {'Result':>8}"
+    header = f"{'Target Ctx':>11} | {'Actual Prompt':>14} | {'Cached':>8} | {'TTFT (s)':>10} | {'Cold (t/s)':>12} | {'Effective':>12} | {'Decode (t/s)':>12} | {'Status':>8}"
     log(header)
     log("-" * len(header))
 
     scaling_results = []
     for target in milestones:
-        repeat_count = max(1, int(target / 45))
-        prompt_text = (base_text * repeat_count) + "\n\nSummarize the key aspects mentioned above in detail."
+        # Prepend unique epoch salt to ensure cold prefill isolation from earlier milestones
+        epoch_salt = f"[Context Benchmark Target: {target} | Epoch: {time.time():.4f} | UUID: {uuid.uuid4()}]\n"
+        repeat_count = max(1, int((target - 20) / 45))
+        prompt_text = epoch_salt + (base_text * repeat_count) + "\n\nSummarize the key aspects mentioned above in detail."
         try:
             res = client.call([{"role": "user", "content": prompt_text}], max_tokens=64, stream=True, timeout=1200)
             actual_prompt = res["prompt_tokens"] if res["prompt_tokens"] > 0 else target
-            prefill_speed = actual_prompt / res["ttft"] if res["ttft"] > 0 else 0.0
+            cached_tokens = res.get("cached_tokens", 0)
+            uncached_tokens = max(0, actual_prompt - cached_tokens)
+            
+            # Compute both raw cold hardware throughput and effective throughput
+            cold_speed = (uncached_tokens / res["ttft"]) if res["ttft"] > 0 and uncached_tokens > 0 else (actual_prompt / res["ttft"] if res["ttft"] > 0 else 0.0)
+            effective_speed = (actual_prompt / res["ttft"]) if res["ttft"] > 0 else 0.0
+
             row = (
-                f"{target:>12,d} | "
+                f"{target:>11,d} | "
                 f"{actual_prompt:>14,d} | "
+                f"{cached_tokens:>8,d} | "
                 f"{res['ttft']:>10.3f} | "
-                f"{prefill_speed:>14.1f} | "
-                f"{res['decode_speed']:>14.2f} | "
-                f"{res['completion_tokens']:>9d} | "
+                f"{cold_speed:>12.1f} | "
+                f"{effective_speed:>12.1f} | "
+                f"{res['decode_speed']:>12.2f} | "
                 f"{'PASS':>8}"
             )
             log(row)
             scaling_results.append({
                 "target_tokens": target,
                 "actual_prompt_tokens": actual_prompt,
+                "cached_tokens": cached_tokens,
                 "ttft_s": round(res["ttft"], 3),
-                "prefill_tok_s": round(prefill_speed, 1),
+                "cold_prefill_tok_s": round(cold_speed, 1),
+                "effective_prefill_tok_s": round(effective_speed, 1),
                 "decode_tok_s": round(res["decode_speed"], 2),
                 "completion_tokens": res["completion_tokens"],
                 "status": "PASS"
             })
         except Exception as e:
-            row = f"{target:>12,d} | {'ERROR':>14} | {str(e)[:40]} | {'FAIL':>8}"
+            row = f"{target:>11,d} | {'ERROR':>14} | {'-':>8} | {'-':>10} | {str(e)[:25]:>12} | {'-':>12} | {'-':>12} | {'FAIL':>8}"
             log(row, color=RED)
             scaling_results.append({
                 "target_tokens": target,
@@ -957,19 +969,21 @@ def print_summary_table(report):
     if cs:
         log("-" * 88)
         log("  [14. Context Scaling Milestone Performance Breakdown]", bold=True)
-        cs_hdr = f"  {'Context Target':<18} | {'Prefill TTFT':<15} | {'Prefill Speed':<18} | {'Decode Speed':<16} | {'Status'}"
+        cs_hdr = f"  {'Context Target':<18} | {'Cached':<8} | {'Prefill TTFT':<14} | {'Cold Speed':<14} | {'Effective':<14} | {'Decode':<12}"
         log(cs_hdr)
         log("  " + "-" * (len(cs_hdr) - 2))
         for step in cs:
             if step.get("status") == "PASS":
                 m_label = f"~{step.get('target_tokens', 0)//1000}k ({step.get('actual_prompt_tokens', 0):,} toks)"
+                cached_str = f"{step.get('cached_tokens', 0):,}"
                 ttft_str = f"{step.get('ttft_s', 0):.2f} s"
-                prefill_str = f"{step.get('prefill_tok_s', 0):.1f} tok/s"
+                cold_str = f"{step.get('cold_prefill_tok_s', 0):.1f} tok/s"
+                eff_str = f"{step.get('effective_prefill_tok_s', 0):.1f} tok/s"
                 decode_str = f"{step.get('decode_tok_s', 0):.2f} tok/s"
-                log(f"  {m_label:<18} | {ttft_str:<15} | {prefill_str:<18} | {decode_str:<16} | {GREEN}PASS{RESET}")
+                log(f"  {m_label:<18} | {cached_str:<8} | {ttft_str:<14} | {cold_str:<14} | {eff_str:<14} | {decode_str:<12}")
             else:
                 m_label = f"{step.get('target_tokens', 0):,} toks"
-                log(f"  {m_label:<18} | {'FAILED':<15} | {str(step.get('error', 'Error'))[:30]} | {RED}FAIL{RESET}")
+                log(f"  {m_label:<18} | {'-':<8} | {'FAILED':<14} | {str(step.get('error', 'Error'))[:28]}")
 
     log("="*88 + "\n")
 
