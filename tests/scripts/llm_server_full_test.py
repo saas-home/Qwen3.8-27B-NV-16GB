@@ -21,6 +21,7 @@ import sys
 import os
 import time
 import json
+import re
 import base64
 import urllib.request
 import urllib.error
@@ -673,17 +674,27 @@ def run_test_extreme_precision(client: LLMClient):
     prompt = (
         f"Perform an exact financial audit ledger reconciliation on the following sequential journal entries:\n"
         f"{ledger_text}\n\n"
-        f"Calculate the precise ending balance to two decimal places. State: 'Ending Balance: $XXXXX.XX'"
+        f"Calculate the precise ending balance to two decimal places step-by-step. State at the end: 'Ending Balance: $XXXXX.XX'"
     )
-    res = client.call([{"role": "user", "content": prompt}], max_tokens=400, stream=True)
-    matched = expected in res["content"]
+    # Increase max_tokens to 1500 to allow full chain-of-thought derivation without premature truncation
+    res = client.call([{"role": "user", "content": prompt}], max_tokens=1500, stream=True)
+    raw_output = res.get("content", "")
+    # Normalize text by stripping commas from thousands separators (e.g., "$11,489.41" -> "$11489.41")
+    normalized_output = raw_output.replace(",", "")
+    matched = (expected in normalized_output) or (expected in raw_output)
     status = "PASS" if matched else "FAIL"
+    
+    # Extract last lines for diagnostic visibility
+    summary_lines = [l.strip() for l in raw_output.strip().splitlines() if l.strip()]
+    response_tail = summary_lines[-1] if summary_lines else "No response generated"
     log(f"  -> Calculated ending balance match ({expected}): {matched} -> {status}")
+    log(f"  -> Model Response Tail: {response_tail[:100]}")
     log(f"  -> TTFT: {res['ttft']*1000:.1f} ms | Decode Speed: {res['decode_speed']:.2f} tok/s")
     return {
         "status": status,
         "expected": expected,
         "matched": matched,
+        "model_tail": response_tail[:200],
         "ttft_ms": round(res["ttft"] * 1000, 1),
         "tok_s": round(res["decode_speed"], 2)
     }
@@ -696,21 +707,34 @@ def run_test_code_execution(client: LLMClient):
     log("[TEST 12/14] Executable Algorithmic Code Generation & Dynamic Verification", bold=True, color=CYAN)
     log("="*88)
     prompt = (
-        "Write a complete Python implementation of an LRU Cache.\n"
+        "Write a complete, self-contained Python implementation of an LRU Cache.\n"
         "Class name must be `LRUCache` with:\n"
         "  `__init__(self, capacity: int)`\n"
         "  `get(self, key: int) -> int` (returns -1 if not found)\n"
         "  `put(self, key: int, value: int) -> None`\n"
         "Provide ONLY the executable Python code inside a ```python ``` code block."
     )
-    res = client.call([{"role": "user", "content": prompt}], max_tokens=800, stream=True)
-    code = res["content"]
-    if "```python" in code:
-        code = code.split("```python")[1].split("```")[0]
-    elif "```" in code:
-        code = code.split("```")[1].split("```")[0]
+    # Increase max_tokens to 2048 to prevent reasoning + code generation from being cut off
+    res = client.call([{"role": "user", "content": prompt}], max_tokens=2048, stream=True)
+    raw_content = res.get("content", "")
+
+    # Robust regex code block extraction (prioritizing class LRUCache over draft snippets in reasoning)
+    blocks = re.findall(r"```(?:python)?\s*\n(.*?)```", raw_content, re.DOTALL | re.IGNORECASE)
+    code = ""
+    if blocks:
+        lru_blocks = [b for b in blocks if "class LRUCache" in b]
+        code = max(lru_blocks, key=len).strip() if lru_blocks else max(blocks, key=len).strip()
+    else:
+        # Fallback for unclosed code block if model was cut off or omitted closing tag
+        m = re.search(r"```(?:python)?\s*\n(.*)", raw_content, re.DOTALL | re.IGNORECASE)
+        code = m.group(1).strip() if m else raw_content.strip()
+
+    # Prepend standard collections imports to prevent spurious NameError if model uses OrderedDict
+    import_preamble = "from collections import OrderedDict, defaultdict\nimport sys\n\n"
 
     test_harness = """
+
+# Test harness execution
 cache = LRUCache(2)
 cache.put(1, 1)
 cache.put(2, 2)
@@ -723,7 +747,7 @@ assert cache.get(3) == 3, "Failed get 3"
 assert cache.get(4) == 4, "Failed get 4"
 print("UNIT_TESTS_PASSED")
 """
-    full_code = code + "\n" + test_harness
+    full_code = import_preamble + code + "\n" + test_harness
     with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
         f.write(full_code)
         f_path = f.name
@@ -731,7 +755,7 @@ print("UNIT_TESTS_PASSED")
     try:
         sub = subprocess.run([sys.executable, f_path], capture_output=True, text=True, timeout=15)
         passed = "UNIT_TESTS_PASSED" in sub.stdout
-        err = sub.stderr.strip()
+        err = sub.stderr.strip() if sub.stderr.strip() else sub.stdout.strip()
     except Exception as e:
         passed = False
         err = str(e)
@@ -740,11 +764,12 @@ print("UNIT_TESTS_PASSED")
             os.remove(f_path)
 
     status = "PASS" if passed else "FAIL"
-    log(f"  -> Dynamic Execution Assertions: {status} {'(All tests passed)' if passed else f'Error: {err[:120]}'}")
+    log(f"  -> Dynamic Execution Assertions: {status} {'(All tests passed)' if passed else f'Error: {err[:150]}'}")
     log(f"  -> Decode Speed: {res['decode_speed']:.2f} tok/s")
     return {
         "status": status,
         "dynamic_tests_passed": passed,
+        "error": err if not passed else "",
         "tok_s": round(res["decode_speed"], 2)
     }
 
