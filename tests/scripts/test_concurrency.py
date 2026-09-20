@@ -76,13 +76,13 @@ def client_task(client_id, prompt, api_url, model, max_tokens, temperature, resu
                     error_msg = str(chunk["error"])
                     break
                     
-                if "usage" in chunk and chunk["usage"]:
-                    prompt_tokens = chunk["usage"].get("prompt_tokens", 0)
-                    completion_tokens = chunk["usage"].get("completion_tokens", 0)
-                
                 choices = chunk.get("choices") or []
                 if choices:
-                    delta = choices[0].get("delta", {})
+                    choice = choices[0]
+                    if choice.get("finish_reason") == "error":
+                        error_msg = "Stream terminated with finish_reason: error"
+                        break
+                    delta = choice.get("delta", {})
                     content = delta.get("content") or delta.get("reasoning_content")
                     if content:
                         now = time.perf_counter()
@@ -90,6 +90,10 @@ def client_task(client_id, prompt, api_url, model, max_tokens, temperature, resu
                             t_first = now
                         t_last = now
                         token_count += 1
+
+                if "usage" in chunk and chunk["usage"]:
+                    prompt_tokens = chunk["usage"].get("prompt_tokens", 0)
+                    completion_tokens = chunk["usage"].get("completion_tokens", 0)
     except Exception as e:
         error_msg = str(e)
 

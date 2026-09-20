@@ -13,30 +13,59 @@ import os
 import time
 import json
 import re
+import re
 import urllib.request
+import urllib.error
 import argparse
 
 DEFAULT_API_URL = "http://127.0.0.1:8888/v1/chat/completions"
 
-def call_model(url, messages, max_tokens=3500, temperature=0.0, enable_thinking=True, timeout=600):
+def call_model(url, messages, max_tokens=3500, temperature=0.0, enable_thinking=True, timeout=600, model="qwen3.8-27b-exl3-3.0bpw", api_key=""):
     payload = {
-        "model": "qwen3.8-27b-exl3-3.0bpw",
+        "model": model,
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
         "stream": False,
-        "chat_template_kwargs": {"enable_thinking": enable_thinking}
     }
+    # Pass chat_template_kwargs only if needed
+    if enable_thinking:
+        payload["chat_template_kwargs"] = {"enable_thinking": True}
+
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
     req_data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=req_data, headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(url, data=req_data, headers=headers)
     
     t0 = time.perf_counter()
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # If rejected due to chat_template_kwargs, retry once without it
+        if "chat_template_kwargs" in payload:
+            payload.pop("chat_template_kwargs", None)
+            req_retry = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)
+            try:
+                with urllib.request.urlopen(req_retry, timeout=timeout) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+            except Exception as e2:
+                print(f"HTTP error during model call: {e2}")
+                return {"content": "", "reasoning": "", "text": "", "prompt_tokens": 0, "completion_tokens": 0, "total_time_s": 0.0, "tok_per_sec": 0.0, "error": str(e2)}
+        else:
+            print(f"HTTP error during model call: {e}")
+            return {"content": "", "reasoning": "", "text": "", "prompt_tokens": 0, "completion_tokens": 0, "total_time_s": 0.0, "tok_per_sec": 0.0, "error": str(e)}
+    except Exception as e:
+        print(f"Request error during model call: {e}")
+        return {"content": "", "reasoning": "", "text": "", "prompt_tokens": 0, "completion_tokens": 0, "total_time_s": 0.0, "tok_per_sec": 0.0, "error": str(e)}
+
     tt = time.perf_counter() - t0
     
-    choice = data["choices"][0]
-    msg = choice["message"]
+    choices = data.get("choices") or [{}]
+    choice = choices[0]
+    msg = choice.get("message", {})
     content = msg.get("content") or ""
     reasoning = msg.get("reasoning_content") or ""
     usage = data.get("usage") or {}
@@ -47,7 +76,7 @@ def call_model(url, messages, max_tokens=3500, temperature=0.0, enable_thinking=
     return {
         "content": content,
         "reasoning": reasoning,
-        "text": content if content.strip() else (reasoning + "\n" + content),
+        "text": (reasoning + "\n" + content) if reasoning.strip() else content,
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_time_s": tt,
@@ -62,7 +91,7 @@ FILLER_BLOCK = (
     "utilize non-blocking asynchronous state machines to overlap network serializations with NVMe barrier flushes. "
 ) # ~75 tokens
 
-def test_14_stage_dependency(url):
+def test_14_stage_dependency(url, model="qwen3.8-27b-exl3-3.0bpw", api_key=""):
     print("\n" + "="*80)
     print("TEST 1: 14-Stage Sequential ALU Dependency Chain (60k Tokens Context)")
     print("="*80)
@@ -123,7 +152,7 @@ def test_14_stage_dependency(url):
     )
     
     print("  Ingesting ~60,000 tokens with 14 chained dependency stages...")
-    res = call_model(url, [{"role": "user", "content": prompt}], max_tokens=3500, temperature=0.0, enable_thinking=True)
+    res = call_model(url, [{"role": "user", "content": prompt}], max_tokens=3500, temperature=0.0, enable_thinking=True, model=model, api_key=api_key)
     print(f"  Generated {res['completion_tokens']} tokens in {res['total_time_s']:.2f}s ({res['tok_per_sec']:.1f} tok/s)")
     
     text = res["text"]
@@ -132,7 +161,7 @@ def test_14_stage_dependency(url):
     print(f"  [Result]: {'PASS' if passed else 'FAIL'}")
     return {"name": "14-Stage Dependency Chain", "passed": passed, "expected": expected_final}
 
-def test_financial_ledger_reconciliation(url):
+def test_financial_ledger_reconciliation(url, model="qwen3.8-27b-exl3-3.0bpw", api_key=""):
     print("\n" + "="*80)
     print("TEST 2: 25-Transaction Floating-Point Ledger Reconciliation (60k Tokens Context)")
     print("="*80)
@@ -194,7 +223,7 @@ def test_financial_ledger_reconciliation(url):
     )
     
     print("  Ingesting ~60,000 tokens with 25 floating-point financial transactions...")
-    res = call_model(url, [{"role": "user", "content": prompt}], max_tokens=3500, temperature=0.0, enable_thinking=True)
+    res = call_model(url, [{"role": "user", "content": prompt}], max_tokens=3500, temperature=0.0, enable_thinking=True, model=model, api_key=api_key)
     print(f"  Generated {res['completion_tokens']} tokens in {res['total_time_s']:.2f}s ({res['tok_per_sec']:.1f} tok/s)")
     
     text = res["text"]
@@ -207,12 +236,14 @@ def test_financial_ledger_reconciliation(url):
 def main():
     parser = argparse.ArgumentParser(description="Extreme Precision Long-Context Stress Test.")
     parser.add_argument("--url", default=DEFAULT_API_URL, help="API completion endpoint")
+    parser.add_argument("--model", default="qwen3.8-27b-exl3-3.0bpw", help="Model name or ID")
+    parser.add_argument("--api-key", default=os.getenv("OPENAI_API_KEY", ""), help="API key")
     parser.add_argument("--out", default="tests/results/extreme_precision_results.json", help="Path to output JSON")
     args = parser.parse_args()
     
     results = []
-    results.append(test_14_stage_dependency(args.url))
-    results.append(test_financial_ledger_reconciliation(args.url))
+    results.append(test_14_stage_dependency(args.url, model=args.model, api_key=args.api_key))
+    results.append(test_financial_ledger_reconciliation(args.url, model=args.model, api_key=args.api_key))
     
     print("\n" + "="*80)
     print("EXTREME PRECISION BENCHMARK SUMMARY")
