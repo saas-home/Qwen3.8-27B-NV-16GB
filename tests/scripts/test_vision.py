@@ -129,6 +129,9 @@ def main():
         "response": "".join(response_text)
     }
 
+    out_dir = os.path.dirname(args.out)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
     with open(args.out, "w") as f:
         json.dump(result, f, indent=2)
     print(f"Saved vision benchmark result to {args.out}")

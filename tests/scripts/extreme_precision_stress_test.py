@@ -13,7 +13,6 @@ import os
 import time
 import json
 import re
-import re
 import urllib.request
 import urllib.error
 import argparse
@@ -228,7 +227,7 @@ def test_financial_ledger_reconciliation(url, model="qwen3.8-27b-exl3-3.0bpw", a
     
     text = res["text"]
     exp_str = f"{expected_balance:.2f}"
-    passed = exp_str in text
+    passed = (exp_str in text) or (exp_str in text.replace(",", ""))
     print(f"  - Expected ending balance = ${exp_str}: {'MATCH' if passed else 'FAIL'}")
     print(f"  [Result]: {'PASS' if passed else 'FAIL'}")
     return {"name": "25-Transaction Ledger Reconciliation", "passed": passed, "expected": exp_str}

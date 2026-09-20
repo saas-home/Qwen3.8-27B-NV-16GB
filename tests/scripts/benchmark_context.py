@@ -149,6 +149,7 @@ def main():
     parser.add_argument("--tokens", type=int, nargs="+", default=[200000], help="Context token target(s)")
     parser.add_argument("--gen-tokens", type=int, default=64, help="Max generation tokens")
     parser.add_argument("--no-salt", action="store_true", help="Disable unique salt prepending (allows warm prefix caching)")
+    parser.add_argument("--out", default=None, help="Optional output JSON path")
     args = parser.parse_args()
 
     print("=" * 96)
@@ -167,6 +168,7 @@ def main():
     print(header)
     print("-" * len(header))
     
+    all_results = []
     for target in args.tokens:
         print(f">> Testing ~{target//1024}k context...", end="", flush=True)
         prompt = build_prompt(target, salt=not args.no_salt)
@@ -175,6 +177,7 @@ def main():
         
         if "error" in res and res["error"]:
             print(f"{target:>12,d} | {'FAILED':>14} | {'-':>8} | {'-':>10} | {str(res['error'])[:24]:>12}")
+            all_results.append({"target_tokens": target, "error": str(res["error"])})
             continue
             
         row = (
@@ -188,10 +191,20 @@ def main():
             f"{res['completion_tokens']:>9d}"
         )
         print(row, flush=True)
+        res["target_tokens"] = target
+        all_results.append(res)
         time.sleep(2)
         
     print("-" * len(header))
     print("Benchmark complete.")
+
+    if args.out:
+        out_dir = os.path.dirname(args.out)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        with open(args.out, "w") as f:
+            json.dump({"url": args.url, "model": args.model, "results": all_results}, f, indent=2)
+        print(f"Saved results to {args.out}")
 
 if __name__ == "__main__":
     main()

@@ -263,6 +263,9 @@ def run_benchmark(base_url: str, output_file: str, model: str = "qwen3.8-27b-exl
         "results": results,
     }
 
+    out_dir = os.path.dirname(output_file)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
     with open(output_file, "w") as f:
         json.dump(summary, f, indent=2)
     print(f"\n=== Benchmark completed! Saved to {output_file} (Avg: {avg_speed:.2f} tok/s) ===")
