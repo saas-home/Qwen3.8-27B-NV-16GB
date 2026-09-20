@@ -219,13 +219,18 @@ def detect_max_context(model_obj):
 
 
 def build_context_milestones(max_context: int):
-    standard_targets = [4000, 8000, 16000, 32000, 64000, 128000, 200000, 256000]
-    milestones = [t for t in standard_targets if t <= int(max_context * 0.95)]
+    standard_targets = [4000, 8000, 16000, 32000, 64000, 128000, 200000, 256000, 512000, 1000000]
+    # Reserve a safety buffer for completion tokens (64) + prompt formatting/salt (~200)
+    headroom = min(1000, max(256, int(max_context * 0.005)))
+    safe_ceiling = max(1000, max_context - headroom)
+
+    milestones = [t for t in standard_targets if t <= safe_ceiling]
     if not milestones:
-        milestones = [min(4000, max_context)]
-    top_target = int(max_context * 0.8)
-    if top_target > milestones[-1]:
-        milestones.append(top_target)
+        milestones = [min(4000, safe_ceiling)]
+
+    # Always include the true maximum supported context ceiling if not already present
+    if safe_ceiling > milestones[-1]:
+        milestones.append(safe_ceiling)
     return sorted(list(set(milestones)))
 
 
@@ -922,95 +927,197 @@ def print_summary_table(report):
         return f"{YELLOW}{st}{RESET}"
 
     # 1. Streaming
-    s = res.get("streaming", {})
-    log(f"{'1. Streaming & Latency':<38} | {fmt_status(s.get('status', 'N/A')):<19} | TTFT: {s.get('ttft_ms', 0):.1f} ms{'':<6} | {s.get('tok_s', 0):.2f} tok/s")
+    if "streaming" in res:
+        s = res.get("streaming", {})
+        log(f"{'1. Streaming & Latency':<38} | {fmt_status(s.get('status', 'N/A')):<19} | TTFT: {s.get('ttft_ms', 0):.1f} ms{'':<6} | {s.get('tok_s', 0):.2f} tok/s")
+    else:
+        log(f"{'1. Streaming & Latency':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
 
     # 2. Vision
-    v = res.get("vision", {})
-    v_ttft = f"TTFT: {v.get('ttft_ms', 0):.1f} ms" if 'ttft_ms' in v else "N/A"
-    v_speed = f"{v.get('tok_s', 0):.2f} tok/s" if 'tok_s' in v else "N/A"
-    log(f"{'2. Multimodal Vision (Invoice)':<38} | {fmt_status(v.get('status', 'N/A')):<19} | {v_ttft:<20} | {v_speed}")
+    if "vision" in res:
+        v = res.get("vision", {})
+        v_ttft = f"TTFT: {v.get('ttft_ms', 0):.1f} ms" if 'ttft_ms' in v else "N/A"
+        v_speed = f"{v.get('tok_s', 0):.2f} tok/s" if 'tok_s' in v else "N/A"
+        log(f"{'2. Multimodal Vision (Invoice)':<38} | {fmt_status(v.get('status', 'N/A')):<19} | {v_ttft:<20} | {v_speed}")
+    else:
+        log(f"{'2. Multimodal Vision (Invoice)':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
 
     # 3. Parallel Batching
-    c = res.get("concurrency", {})
-    for ckey, cval in c.items():
-        c_label = f"3. Parallel Batching ({ckey.upper()})"
-        c_speed = f"{cval.get('aggregate_tok_s', 0):.2f} tok/s (agg)"
-        c_wall = f"{cval.get('wall_time_s', 0):.2f} s wall"
-        log(f"{c_label:<38} | {fmt_status(cval.get('status', 'N/A')):<19} | {c_wall:<20} | {c_speed}")
+    if "concurrency" in res:
+        c = res.get("concurrency", {})
+        for ckey, cval in c.items():
+            c_label = f"3. Parallel Batching ({ckey.upper()})"
+            c_speed = f"{cval.get('aggregate_tok_s', 0):.2f} tok/s (agg)"
+            c_wall = f"{cval.get('wall_time_s', 0):.2f} s wall"
+            log(f"{c_label:<38} | {fmt_status(cval.get('status', 'N/A')):<19} | {c_wall:<20} | {c_speed}")
+    else:
+        log(f"{'3. Parallel Batching':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
 
     # 4. Capabilities
-    cap = res.get("capabilities_4tasks", {})
-    cap_speed = f"{cap.get('average_speed_tok_s', 0):.2f} tok/s (avg)"
-    log(f"{'4. 4-Task Architecture Suite':<38} | {fmt_status(cap.get('status', 'N/A')):<19} | 4/4 tasks passed{'':<5} | {cap_speed}")
+    if "capabilities_4tasks" in res:
+        cap = res.get("capabilities_4tasks", {})
+        cap_speed = f"{cap.get('average_speed_tok_s', 0):.2f} tok/s (avg)"
+        log(f"{'4. 4-Task Architecture Suite':<38} | {fmt_status(cap.get('status', 'N/A')):<19} | 4/4 tasks passed{'':<5} | {cap_speed}")
+    else:
+        log(f"{'4. 4-Task Architecture Suite':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
 
     # 5. Tool Calling
-    tc = res.get("tool_calling", {})
-    tc_desc = "JSON Args Valid" if tc.get("status") == "PASS" else "Args Invalid"
-    log(f"{'5. Tool / Function Calling Protocol':<38} | {fmt_status(tc.get('status', 'N/A')):<19} | {tc_desc:<20} | TTFT: {tc.get('ttft_ms', 0):.1f} ms")
+    if "tool_calling" in res:
+        tc = res.get("tool_calling", {})
+        tc_desc = "JSON Args Valid" if tc.get("status") == "PASS" else "Args Invalid"
+        log(f"{'5. Tool / Function Calling Protocol':<38} | {fmt_status(tc.get('status', 'N/A')):<19} | {tc_desc:<20} | TTFT: {tc.get('ttft_ms', 0):.1f} ms")
+    else:
+        log(f"{'5. Tool / Function Calling Protocol':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
 
     # 6. JSON Schema
-    js = res.get("json_schema", {})
-    js_desc = "Strict Schema Conformed" if js.get("valid_schema") else "Schema Invalid"
-    log(f"{'6. JSON Schema Mode (response_format)':<38} | {fmt_status(js.get('status', 'N/A')):<19} | {js_desc:<20} | {js.get('tok_s', 0):.2f} tok/s")
+    if "json_schema" in res:
+        js = res.get("json_schema", {})
+        js_desc = "Strict Schema Conformed" if js.get("valid_schema") else "Schema Invalid"
+        log(f"{'6. JSON Schema Mode (response_format)':<38} | {fmt_status(js.get('status', 'N/A')):<19} | {js_desc:<20} | {js.get('tok_s', 0):.2f} tok/s")
+    else:
+        log(f"{'6. JSON Schema Mode (response_format)':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
 
     # 7. Prefix Caching
-    pc = res.get("prefix_caching", {})
-    pc_desc = f"{pc.get('speedup_ratio', 1.0):.1f}x speedup" if pc.get("speedup_ratio") else "N/A"
-    log(f"{'7. Prefix / KV Cache Reuse':<38} | {fmt_status(pc.get('status', 'N/A')):<19} | {pc_desc:<20} | Warm: {pc.get('warm_ttft_s', 0):.3f}s")
+    if "prefix_caching" in res:
+        pc = res.get("prefix_caching", {})
+        pc_desc = f"{pc.get('speedup_ratio', 1.0):.1f}x speedup" if pc.get("speedup_ratio") else "N/A"
+        log(f"{'7. Prefix / KV Cache Reuse':<38} | {fmt_status(pc.get('status', 'N/A')):<19} | {pc_desc:<20} | Warm: {pc.get('warm_ttft_s', 0):.3f}s")
+    else:
+        log(f"{'7. Prefix / KV Cache Reuse':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
 
     # 8. Client Abort
-    ca = res.get("client_abort", {})
-    ca_desc = f"Rec: {ca.get('recovery_latency_ms', 0):.1f} ms"
-    log(f"{'8. Client Socket Abort Recovery':<38} | {fmt_status(ca.get('status', 'N/A')):<19} | {ca_desc:<20} | Slots Released")
+    if "client_abort" in res:
+        ca = res.get("client_abort", {})
+        ca_desc = f"Rec: {ca.get('recovery_latency_ms', 0):.1f} ms"
+        log(f"{'8. Client Socket Abort Recovery':<38} | {fmt_status(ca.get('status', 'N/A')):<19} | {ca_desc:<20} | Slots Released")
+    else:
+        log(f"{'8. Client Socket Abort Recovery':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
 
     # 9. Stop Sequences
-    ss = res.get("stop_sequences", {})
-    ss_desc = "Deterministic (temp=0)" if ss.get("deterministic_greedy_reproducible") else "Non-deterministic"
-    log(f"{'9. Stop Words & Greedy Sampling':<38} | {fmt_status(ss.get('status', 'N/A')):<19} | {ss_desc:<20} | Tokens Suppressed")
+    if "stop_sequences" in res:
+        ss = res.get("stop_sequences", {})
+        ss_desc = "Deterministic (temp=0)" if ss.get("deterministic_greedy_reproducible") else "Non-deterministic"
+        log(f"{'9. Stop Words & Greedy Sampling':<38} | {fmt_status(ss.get('status', 'N/A')):<19} | {ss_desc:<20} | Tokens Suppressed")
+    else:
+        log(f"{'9. Stop Words & Greedy Sampling':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
 
     # 10. High Entropy
-    he = res.get("high_entropy_recall", {})
-    he_speed = f"{he.get('tok_s', 0):.2f} tok/s"
-    log(f"{'10. High-Entropy Key-Value Recall':<38} | {fmt_status(he.get('status', 'N/A')):<19} | TTFT: {he.get('ttft_ms', 0):.1f} ms{'':<4} | {he_speed}")
+    if "high_entropy_recall" in res:
+        he = res.get("high_entropy_recall", {})
+        he_speed = f"{he.get('tok_s', 0):.2f} tok/s"
+        log(f"{'10. High-Entropy Key-Value Recall':<38} | {fmt_status(he.get('status', 'N/A')):<19} | TTFT: {he.get('ttft_ms', 0):.1f} ms{'':<4} | {he_speed}")
+    else:
+        log(f"{'10. High-Entropy Key-Value Recall':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
 
     # 11. Extreme Precision
-    ep = res.get("extreme_precision", {})
-    ep_desc = "Exact Matched" if ep.get("matched") else "Balance Diverged"
-    log(f"{'11. Precision Ledger Reconcile':<38} | {fmt_status(ep.get('status', 'N/A')):<19} | {ep_desc:<20} | {ep.get('tok_s', 0):.2f} tok/s")
+    if "extreme_precision" in res:
+        ep = res.get("extreme_precision", {})
+        ep_desc = "Exact Matched" if ep.get("matched") else "Balance Diverged"
+        log(f"{'11. Precision Ledger Reconcile':<38} | {fmt_status(ep.get('status', 'N/A')):<19} | {ep_desc:<20} | {ep.get('tok_s', 0):.2f} tok/s")
+    else:
+        log(f"{'11. Precision Ledger Reconcile':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
 
     # 12. Code Execution
-    ce = res.get("code_execution", {})
-    ce_desc = "Dynamic Assertions OK" if ce.get("dynamic_tests_passed") else "Assertion Failure"
-    log(f"{'12. Dynamic Code Unit Testing':<38} | {fmt_status(ce.get('status', 'N/A')):<19} | {ce_desc:<20} | {ce.get('tok_s', 0):.2f} tok/s")
+    if "code_execution" in res:
+        ce = res.get("code_execution", {})
+        ce_desc = "Dynamic Assertions OK" if ce.get("dynamic_tests_passed") else "Assertion Failure"
+        log(f"{'12. Dynamic Code Unit Testing':<38} | {fmt_status(ce.get('status', 'N/A')):<19} | {ce_desc:<20} | {ce.get('tok_s', 0):.2f} tok/s")
+    else:
+        log(f"{'12. Dynamic Code Unit Testing':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
 
     # 13. Error Handling
-    eh = res.get("error_handling", {})
-    eh_desc = "HTTP 400/422 Standard" if eh.get("bad_schema_rejected") else "Non-standard error"
-    log(f"{'13. API Error Protocol Compliance':<38} | {fmt_status(eh.get('status', 'N/A')):<19} | {eh_desc:<20} | Protocol OK")
+    if "error_handling" in res:
+        eh = res.get("error_handling", {})
+        eh_desc = "HTTP 400/422 Standard" if eh.get("bad_schema_rejected") else "Non-standard error"
+        log(f"{'13. API Error Protocol Compliance':<38} | {fmt_status(eh.get('status', 'N/A')):<19} | {eh_desc:<20} | Protocol OK")
+    else:
+        log(f"{'13. API Error Protocol Compliance':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
 
     # 14. Context Scaling Summary
-    cs = res.get("context_scaling", [])
-    if cs:
-        log("-" * 88)
-        log("  [14. Context Scaling Milestone Performance Breakdown]", bold=True)
-        cs_hdr = f"  {'Context Target':<18} | {'Cached':<8} | {'Prefill TTFT':<14} | {'Cold Speed':<14} | {'Effective':<14} | {'Decode':<12}"
-        log(cs_hdr)
-        log("  " + "-" * (len(cs_hdr) - 2))
-        for step in cs:
-            if step.get("status") == "PASS":
-                m_label = f"~{step.get('target_tokens', 0)//1000}k ({step.get('actual_prompt_tokens', 0):,} toks)"
-                cached_str = f"{step.get('cached_tokens', 0):,}"
-                ttft_str = f"{step.get('ttft_s', 0):.2f} s"
-                cold_str = f"{step.get('cold_prefill_tok_s', 0):.1f} tok/s"
-                eff_str = f"{step.get('effective_prefill_tok_s', 0):.1f} tok/s"
-                decode_str = f"{step.get('decode_tok_s', 0):.2f} tok/s"
-                log(f"  {m_label:<18} | {cached_str:<8} | {ttft_str:<14} | {cold_str:<14} | {eff_str:<14} | {decode_str:<12}")
-            else:
-                m_label = f"{step.get('target_tokens', 0):,} toks"
-                log(f"  {m_label:<18} | {'-':<8} | {'FAILED':<14} | {str(step.get('error', 'Error'))[:28]}")
+    if "context_scaling" in res:
+        cs = res.get("context_scaling", [])
+        if cs:
+            log("-" * 88)
+            log("  [14. Context Scaling Milestone Performance Breakdown]", bold=True)
+            cs_hdr = f"  {'Context Target':<18} | {'Cached':<8} | {'Prefill TTFT':<14} | {'Cold Speed':<14} | {'Effective':<14} | {'Decode':<12}"
+            log(cs_hdr)
+            log("  " + "-" * (len(cs_hdr) - 2))
+            for step in cs:
+                if step.get("status") == "PASS":
+                    m_label = f"~{step.get('target_tokens', 0)//1000}k ({step.get('actual_prompt_tokens', 0):,} toks)"
+                    cached_str = f"{step.get('cached_tokens', 0):,}"
+                    ttft_str = f"{step.get('ttft_s', 0):.2f} s"
+                    cold_str = f"{step.get('cold_prefill_tok_s', 0):.1f} tok/s"
+                    eff_str = f"{step.get('effective_prefill_tok_s', 0):.1f} tok/s"
+                    decode_str = f"{step.get('decode_tok_s', 0):.2f} tok/s"
+                    log(f"  {m_label:<18} | {cached_str:<8} | {ttft_str:<14} | {cold_str:<14} | {eff_str:<14} | {decode_str:<12}")
+                else:
+                    m_label = f"{step.get('target_tokens', 0):,} toks"
+                    log(f"  {m_label:<18} | {'-':<8} | {'FAILED':<14} | {str(step.get('error', 'Error'))[:28]}")
+    else:
+        log(f"{'14. Dynamic Context Scaling':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
 
     log("="*88 + "\n")
+
+
+NAME_TO_TEST_NUM = {
+    "streaming": 1,
+    "vision": 2,
+    "concurrency": 3,
+    "parallel": 3,
+    "batching": 3,
+    "capabilities": 4,
+    "capabilities_4tasks": 4,
+    "tasks": 4,
+    "tool_calling": 5,
+    "tools": 5,
+    "json_schema": 6,
+    "schema": 6,
+    "prefix_caching": 7,
+    "caching": 7,
+    "client_abort": 8,
+    "abort": 8,
+    "stop_sequences": 9,
+    "stop": 9,
+    "high_entropy": 10,
+    "high_entropy_recall": 10,
+    "recall": 10,
+    "extreme_precision": 11,
+    "precision": 11,
+    "code_execution": 12,
+    "code": 12,
+    "error_handling": 13,
+    "error": 13,
+    "context_scaling": 14,
+    "context": 14,
+    "scale": 14,
+}
+
+def parse_selected_tests(test_arg: str):
+    if not test_arg:
+        return set(range(1, 15))
+    selected = set()
+    parts = [p.strip() for p in test_arg.replace(" ", ",").split(",") if p.strip()]
+    for part in parts:
+        if "-" in part and not part.startswith("-"):
+            subparts = part.split("-", 1)
+            if subparts[0].isdigit() and subparts[1].isdigit():
+                start_n, end_n = int(subparts[0]), int(subparts[1])
+                for n in range(start_n, end_n + 1):
+                    if 1 <= n <= 14:
+                        selected.add(n)
+                continue
+        if part.isdigit():
+            n = int(part)
+            if 1 <= n <= 14:
+                selected.add(n)
+        else:
+            lower = part.lower().replace("-", "_")
+            if lower in NAME_TO_TEST_NUM:
+                selected.add(NAME_TO_TEST_NUM[lower])
+            else:
+                log(f"Warning: Unknown test identifier '{part}'. Ignored.", color=YELLOW)
+    return selected if selected else set(range(1, 15))
 
 
 # ============================================================================
@@ -1024,6 +1131,8 @@ def main():
     parser.add_argument("--model", "-m", help="Model name or ID to test")
     parser.add_argument("--parallel", "-p", type=int, help="Number of parallel clients to test")
     parser.add_argument("--max-context", type=int, help="Override detected max context window tokens")
+    parser.add_argument("--milestones", type=int, nargs="+", default=None, help="Custom context milestones for test 14 (e.g. --milestones 4000 8000 200000 204000)")
+    parser.add_argument("--test", "-t", default=None, help="Run specific test(s) by number or name (e.g. 14, '11,12', '1-5', 'context_scaling')")
     parser.add_argument("--out", "-o", help="Path to write JSON benchmark report")
     parser.add_argument("--auto", "-y", action="store_true", help="Non-interactive auto-selection mode")
     args = parser.parse_args()
@@ -1094,8 +1203,12 @@ def main():
         max_context = detected_ctx
         log(f"Detected Max Context Window: {max_context:,} tokens")
 
-    milestones = build_context_milestones(max_context)
-    log(f"Adopted Context Scaling Targets: {milestones}")
+    if args.milestones:
+        milestones = sorted(list(set(args.milestones)))
+        log(f"Context Scaling Targets (Overridden by flag): {milestones}")
+    else:
+        milestones = build_context_milestones(max_context)
+        log(f"Adopted Context Scaling Targets: {milestones}")
 
     # 4. Detect / Configure Concurrency & Parallel Slots
     health = client.fetch_health()
@@ -1116,7 +1229,11 @@ def main():
 
     log(f"Parallel Test Level: {parallel} concurrent streams\n")
 
-    # 5. Execute Full Suite
+    # 5. Execute Selected Test(s)
+    selected_tests = parse_selected_tests(args.test)
+    if args.test:
+        log(f"Selective Test Execution Active: Running test(s) {sorted(list(selected_tests))} out of 14\n", color=CYAN, bold=True)
+
     report = {
         "endpoint": endpoint,
         "model": model_name,
@@ -1129,20 +1246,34 @@ def main():
 
     t_suite_start = time.perf_counter()
 
-    report["results"]["streaming"] = run_test_streaming(client)
-    report["results"]["vision"] = run_test_vision(client)
-    report["results"]["concurrency"] = run_test_concurrency(client, parallel)
-    report["results"]["capabilities_4tasks"] = run_test_capabilities(client)
-    report["results"]["tool_calling"] = run_test_tool_calling(client)
-    report["results"]["json_schema"] = run_test_json_schema(client)
-    report["results"]["prefix_caching"] = run_test_prefix_caching(client)
-    report["results"]["client_abort"] = run_test_client_abort(client)
-    report["results"]["stop_sequences"] = run_test_stop_sequences(client)
-    report["results"]["high_entropy_recall"] = run_test_high_entropy(client)
-    report["results"]["extreme_precision"] = run_test_extreme_precision(client)
-    report["results"]["code_execution"] = run_test_code_execution(client)
-    report["results"]["error_handling"] = run_test_error_handling(client)
-    report["results"]["context_scaling"] = run_test_context_scaling(client, milestones)
+    if 1 in selected_tests:
+        report["results"]["streaming"] = run_test_streaming(client)
+    if 2 in selected_tests:
+        report["results"]["vision"] = run_test_vision(client)
+    if 3 in selected_tests:
+        report["results"]["concurrency"] = run_test_concurrency(client, parallel)
+    if 4 in selected_tests:
+        report["results"]["capabilities_4tasks"] = run_test_capabilities(client)
+    if 5 in selected_tests:
+        report["results"]["tool_calling"] = run_test_tool_calling(client)
+    if 6 in selected_tests:
+        report["results"]["json_schema"] = run_test_json_schema(client)
+    if 7 in selected_tests:
+        report["results"]["prefix_caching"] = run_test_prefix_caching(client)
+    if 8 in selected_tests:
+        report["results"]["client_abort"] = run_test_client_abort(client)
+    if 9 in selected_tests:
+        report["results"]["stop_sequences"] = run_test_stop_sequences(client)
+    if 10 in selected_tests:
+        report["results"]["high_entropy_recall"] = run_test_high_entropy(client)
+    if 11 in selected_tests:
+        report["results"]["extreme_precision"] = run_test_extreme_precision(client)
+    if 12 in selected_tests:
+        report["results"]["code_execution"] = run_test_code_execution(client)
+    if 13 in selected_tests:
+        report["results"]["error_handling"] = run_test_error_handling(client)
+    if 14 in selected_tests:
+        report["results"]["context_scaling"] = run_test_context_scaling(client, milestones)
 
     total_suite_time = time.perf_counter() - t_suite_start
     report["total_suite_wall_time_s"] = round(total_suite_time, 2)
@@ -1150,6 +1281,9 @@ def main():
     # 6. Save JSON Report
     parsed_host = urlparse(endpoint).netloc.replace(":", "_") or "local"
     out_file = args.out or os.path.join(DEFAULT_RESULTS_DIR, f"enterprise_eval_{parsed_host}_{time.strftime('%Y%m%d_%H%M%S')}.json")
+    out_dir = os.path.dirname(out_file)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
     with open(out_file, "w") as f:
         json.dump(report, f, indent=2)
 
