@@ -1,783 +1,198 @@
-# About This Fork (`saas-home/Qwen3.8-27B-NV-16GB`)
+# Qwen3.8-27B for 16GB NVIDIA GPUs (Extreme 204.8k Context & Continuous Batching)
 
-> [!NOTE]
-> This repository is a specialized, production-hardened fork of [`MiaAI-Lab/Qwen3.8-27B-16gb-NVIDIA-GPUs-one-click-install`](https://github.com/MiaAI-Lab/Qwen3.8-27B-16gb-NVIDIA-GPUs-one-click-install), originally created and maintained by [Mia's AI Lab](https://x.com/MiaAI_lab). All original one-click installation workflows, Windows/Linux launchers, and UI harness integrations are the work of Mia's AI Lab.
->
-> While upstream provides general 16–32 GB desktop setups, this fork focuses on **maximizing context horizon, multi-turn reasoning stability, and throughput on consumer 16 GB NVIDIA GPUs** (e.g., RTX 4070 Ti SUPER) and extreme long-context developer workloads.
->
-> **Key Enhancements in this Fork:**
-> - **204,800 Token Context Window:** Expands verified stable context to a full 204.8k tokens (~800 pages) on a single 16 GB card with 3.0 bpw EXL3 and 4-bit Hadamard KV cache.
-> - **2-Slot Parallel Continuous Batching (`PARALLEL=2`):** Continuous multi-slot batching engine (`BatchWorker`) with `-ambs` multi-slot cache allocation supports true concurrent generation across multiple coding agents simultaneously on GPU with thread-safe per-job queues and live terminal telemetry (`simplex monitor`).
-> - **Dynamic Context Headroom Clamping:** Dynamically computes available KV cache pages per request (`min(max_tokens, max_total - prompt_toks - 2 - num_draft)`), eliminating ExLlamaV3 page allocation crashes on long conversational turns.
-> - **Zero-VRAM Multimodal Vision (`EXL3_VISION_PINNED=1`):** Pins the vision tower in host DDR5 RAM, reclaiming ~0.87 GB VRAM directly for the KV cache.
-> - **Headless VRAM Budget Optimization:** Automatically detects headless environments (`is_headless()`), increasing usable VRAM to **15.7 GB** (vs. 14.7 GB upstream desktop default).
-> - **24 GB DDR5 Host Prompt Cache (`CPU_CACHE_GB=24`):** Secondary host RAM tiering preserves prompt prefixes, yielding **sub-second TTFT (0.93s at 200k tokens)** on iterative reasoning turns.
-> - **AMD Ryzen 9 7950X3D CPU Affinity:** Pins worker execution to CCD0 3D V-Cache (`AFFINITY=0-7,16-23`), eliminating cross-CCD latency penalties.
-> - **Extended Generation Ceiling & Reasoning Hygiene:** Eliminates Coding Agent socket dropouts (`MAX_TOKENS=16384`) and sanitizes historical `<think>` tags (`NO_REASONING_PRESERVE=1`).
-> - **Dynamic Engine Resolution:** Supports ExLlamaV3 v1.5.0+ through dynamic semver resolution.
-> - **14-Stage Enterprise Qualification Suite (`tests/scripts/`):** Unified test harness (`llm_server_full_test.py`) certifying latency, multimodal vision, continuous batching, tool calling, structured JSON schema, prefix caching, socket abort recovery, precision financial ledger reconciliation, dynamic code unit testing, and context scaling up to the full 204.8k ceiling with zero OOM.
-> - **Detailed Technical Whitepaper & Benchmarks:** Comprehensive empirical evaluation, latency curves, and head-to-head comparison against llama.cpp are documented in [Qwen3.8-27B-NV-16GB-Optimization-Whitepaper.md](Qwen3.8-27B-NV-16GB-Optimization-Whitepaper.md).
->
-> ### 🚀 Multi-Client Continuous Batching Benchmark (`PARALLEL=2`)
->
-> When connecting multiple coding agents (e.g. Claude Code, Cline, Cursor, Aider) simultaneously:
->
-> | Serving Architecture | Client 1 Decode | Client 2 Decode | Total Throughput | Multi-Agent Behavior |
-> | :--- | :--- | :--- | :--- | :--- |
-> | **Upstream Baseline (Serial)** | ~44.5 tok/s | **0.0 tok/s (Blocked)** | 44.5 tok/s | ❌ Agent 2 freezes in silence until Agent 1 finishes |
-> | **This Fork (`PARALLEL=2`)** | **36.15 tok/s** | **34.10 tok/s** | **70.25 tok/s (+58%)** | ✅ **Both agents stream simultaneously in real time** |
->
-> *Empirically verified on NVIDIA RTX 4070 Ti SUPER (16 GB) running Qwen3.8-27B-EXL3-3.0bpw @ 204.8k context. See [full empirical benchmarks below](#multi-client-concurrency--continuous-batching-benchmark).*
+> **Repository:** [`saas-home/Qwen3.8-27B-NV-16GB`](https://github.com/saas-home/Qwen3.8-27B-NV-16GB)  
+> **Upstream Project:** Forked from [`MiaAI-Lab/Qwen3.8-27B-16gb-NVIDIA-GPUs-one-click-install`](https://github.com/MiaAI-Lab/Qwen3.8-27B-16gb-NVIDIA-GPUs-one-click-install) by [Mia's AI Lab](https://x.com/MiaAI_lab).  
+> *(For Windows 1-click desktop guides, general multi-GPU setups, and upstream release archives, please refer directly to the [upstream repository](https://github.com/MiaAI-Lab/Qwen3.8-27B-16gb-NVIDIA-GPUs-one-click-install).)*
 
 ---
 
-<h1 align="center">Qwen3.8-27B on 16-32 GB Nvidia GPUs one-click install for Windows / Linux</h1>
+## Overview
 
-<p align="center">
-  <img src="assets/intro.png" alt="Qwen3.8-27B one-click install" width="900" />
-</p>
+This repository is a production-hardened, high-performance serving kit for **[Qwen/Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B)** in turboderp's EXL3 format, optimized specifically for **Ubuntu Linux** (tested on **Ubuntu 26.04 / 24.04**) and consumer **16 GB NVIDIA GPUs** (benchmarked on the **NVIDIA GeForce RTX 4070 Ti SUPER 16 GB**).
 
-<p align="center">
-  <sub>by <a href="https://x.com/MiaAI_lab">Mia'a AI Lab</a></sub>
-  <br><br>
-  <a href="https://github.com/sponsors/MiaAI-Lab" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin:0 8px;vertical-align:middle;"><img src="https://img.shields.io/badge/Sponsor%20me%20on%20GitHub-181717?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="Sponsor me on GitHub" height="28" style="height:28px;width:auto;vertical-align:middle;border:0;" /></a>
-  <a href="https://x.com/MiaAI_lab" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin:0 8px;vertical-align:middle;"><img src="https://img.shields.io/badge/Follow%20me%20on%20X-000000?style=for-the-badge&logo=x&logoColor=white" alt="Follow Mia on X" height="28" style="height:28px;width:auto;vertical-align:middle;border:0;" /></a>
-</p>
-
-A serving kit for [Qwen/Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B) in
-**[turboderp](https://huggingface.co/turboderp)**'s EXL3 quants, on one consumer
-NVIDIA card. It picks a quant that fits the card it finds, installs its own Python
-environment, downloads the weights, serves an **OpenAI-compatible** endpoint, and
-opens a chat UI. Windows and Linux, same behaviour.
-
-It started as a 16 GB recipe — the 2.0 bpw quant is still that floor, and still the
-one thing here that is not turboderp's own upload ([Mia-AiLab/Qwen3.8-27B-EXL3-2.0bpw](https://huggingface.co/Mia-AiLab/Qwen3.8-27B-EXL3-2.0bpw),
-`SC_2.00bpw_H3_V3`). Everything from 2.5 bpw up is pulled from
-[turboderp/Qwen3.8-27B-exl3](https://huggingface.co/turboderp/Qwen3.8-27B-exl3)
-by revision. Which one you get is [decided by your VRAM](#what-the-launcher-picks-for-your-gpu),
-at setup, and you can change it any time.
-
-> **Jump to your guide:** [Windows](#windows) · [Linux](#linux)
+While standard desktop baselines truncate context to ~117k tokens and serialize multi-client requests, this fork unlocks an unprecedented **204,800 token context window (~800 pages)**, **2-slot concurrent continuous batching**, and an **automated 14-stage enterprise qualification suite** on a single 16 GB graphics card.
 
 ---
 
-## Before you start (both systems)
+## Key Benefits: What's New in This Fork
 
-| | |
-| --- | --- |
-| GPU | NVIDIA, 12 GB VRAM or more, compute capability 7.5+ (Turing and newer). 16 GB is the size this kit was built around. |
-| Driver | 570 or newer (the default PyTorch build is cu128). |
-| Python | **3.11 or newer, 64-bit.** The only thing you install by hand. |
-| Node | **22.19+** from [nodejs.org](https://nodejs.org/) (current dsh). Older LTS (20) warns `EBADENGINE` and the chat UI may fail. Without Node, `/v1` still serves; the launcher says what is missing. |
-| Disk | 9.7–22.9 GB per quant (see the table below), plus several GB for the Python environment and PyTorch. |
-
-**Not needed:** CUDA Toolkit, Visual Studio Build Tools, Git. The engine arrives as a
-[prebuilt wheel](#prebuilt-wheels-no-compiler-needed); compiling is the fallback for
-platforms no wheel covers.
-
-Everything the kit installs stays inside its own folder — `.venv/`, `models/`,
-`logs/`, `apps/`, `.dsh/`. Nothing goes into the system Python and nothing needs
-administrator rights.
-
----
-
-## Windows
-
-Everything is in the `windows\` folder. Run the `.bat` files from Explorer
-(double-click) or from a `cmd` window opened in the kit folder.
-
-### 1. Install — `windows\START-HERE.bat`
-
-Double-click it once. It opens a page in your browser and does the whole install
-there: it shows what it found on the card, offers the model sizes that fit it, then
-installs and downloads with a progress bar and a live log. Nothing is asked in the
-console.
-
-When the download finishes it **loads that model** and hands the page over to the
-chat, so one double-click takes you from nothing to a working chat window.
-
-```
-windows\START-HERE.bat              install, then start what was installed
-windows\START-HERE.bat --no-start   install only — for fetching a second size
-```
-
-Notes:
-
-* The download is **resumable**. Closing the window, losing the connection or
-  rebooting costs you nothing — it picks up from the byte it stopped at. A model
-  left half-downloaded is shown as such in the menus, and running
-  `windows\START-HERE.bat` again finishes it. Nothing offers to *start* a model
-  until every weight file is on disk.
-* Prefer the old console questions to the web page? Set `SETUP=console` in `.env`.
-
-### 2. Every day after that — `windows\start.bat`
-
-```
-windows\start.bat          start a model that is already here
-windows\start.bat setup    go to setup instead (same as START-HERE.bat)
-```
-
-It never downloads anything. What it does:
-
-1. **Asks which model**, if more than one size is on disk. Enter takes the one that
-   ran last, and it starts on its own after 45 seconds so an unattended machine
-   still comes up.
-2. **Checks free VRAM** right before the load — it wants the `GPU_MEM_GB` budget
-   from `.env` plus a little margin. If that much is not free it lists the programs
-   holding VRAM (browsers, games, Discord, other AI tools) and waits: Enter
-   re-checks, `c` continues anyway, `q` quits, and it continues on its own after
-   120 seconds. **Take this seriously on Windows** — with too little free VRAM the
-   driver pages the model into system RAM instead of failing, and it then runs many
-   times slower.
-3. **Loads the model** and opens the [chat UI](#the-deepseek-harness) at
-   `http://127.0.0.1:3080/`.
-
-If nothing is installed yet, or nothing finished downloading, it says so and offers
-to run setup for you — double-clicking the wrong one is never a dead end.
-
-Two files rather than one because they answer two different questions:
-`windows\start.bat` never downloads, and `windows\START-HERE.bat --no-start` never
-loads.
-
-### 3. While it runs
-
-* The console window it opened **is** the server. Closing it stops the model.
-* Simplex puts an icon in the notification area — right-click for **Open Simplex**,
-  **Restart the model**, **Show the Simplex folder**, **View the log** and
-  **Quit Simplex**.
-  (`TRAY=no` in `.env` turns it off.)
-* Every launch writes a full transcript to `logs\`, so a crash that scrolls past is
-  still readable afterwards.
-* The first successful launch adds Start-menu and desktop shortcuts
-  (`SHORTCUTS=no` in `.env` to skip that).
-
-### 4. Stopping — `windows\stop.bat`
-
-```
-windows\stop.bat                 stop both the model and the chat UI
-windows\stop.bat --harness-only  leave the model loaded, close the UI
-windows\stop.bat --server-only   leave the UI running, unload the model
-```
-
-### 5. Windows troubleshooting
-
-| symptom | what to do |
-| --- | --- |
-| "Simplex needs Python and cannot find it" | Install 64-bit Python 3.11+ from [python.org](https://www.python.org/downloads/) and tick **Add python.exe to PATH**, then run the file again. |
-| Anything else | `windows\simplex.bat doctor` — see [below](#simplex-doctor). |
-| The model loads but crawls | Free VRAM (the check above told you what is holding it), or lower `CONTEXT_SIZE` / `GPU_MEM_GB` in `.env`. |
-| "Images: off" in the Ready box | The vision tower did not fit next to your context. Lower `CONTEXT_SIZE` and restart, or pick a smaller quant. |
-| The window closed and you missed the error | It is in `logs\` — newest file. `windows\simplex.bat logs` prints the tail. |
-| You want to start completely over | `reset_new_user.bat` in the kit root deletes the weights, the venv, `.env`, the logs and the shortcuts, and keeps every tracked file. It asks you to type `RESET` first. |
+1. **Full 204,800 Token Context Ceiling on 16GB GPU**:
+   - Ingests and reasons over entire codebases and massive documentation repositories on a single 16 GB card using 3.0 bpw EXL3 weights.
+   - Empirically certified up to **203,852 tokens (99.54% of hardware ceiling)** with **zero memory fragmentation crashes or OOMs**.
+2. **Asymmetric KV Cache Quantization (`CACHE_QUANT=4,3`)**:
+   - Quantizes Keys to 4-bit (preserving attentional steering) and Values to 3-bit.
+   - Slashes VRAM consumption by **600 MiB** at 200k context, recovering **>1 GB of critical safety headroom** on 16 GB cards.
+3. **2-Slot Parallel Continuous Batching (`PARALLEL=2`)**:
+   - Replaced serial locks with an asynchronous `BatchWorker` dispatcher and per-job queues.
+   - Allows multiple coding agents (e.g. Claude Code, Cline, Cursor, Aider) to stream responses simultaneously on GPU at **~70.25 tok/s aggregate throughput (+58% gain)** instead of serial blocking.
+4. **Dynamic Context Headroom Clamping**:
+   - Eliminates ExLlamaV3 `AssertionError: Job requires X pages (only Y available)` when deep conversational turns receive large token requests, dynamically clamping generation tokens to available cache headroom.
+5. **Zero-VRAM Multimodal Vision (`EXL3_VISION_PINNED=1`)**:
+   - Pins the vision tower in host DDR5 RAM, saving ~0.87 GB of VRAM directly for the text KV cache while maintaining fast 1.06s invoice/document parsing.
+6. **24 GB DDR5 Host Prompt Cache (`CPU_CACHE_GB=24`)**:
+   - Yields **sub-second TTFT (0.91s at 200k context)** on iterative conversational turns with shared prompt prefixes.
+7. **AMD Ryzen 9 7950X3D CPU Affinity (`AFFINITY=0-7,16-23`)**:
+   - Pins worker execution to CCD0 3D V-Cache, eliminating cross-CCD bus latency penalties.
+8. **14-Stage Enterprise Qualification Suite (`tests/scripts/llm_server_full_test.py`)**:
+   - Automated end-to-end certification across Streaming, Vision, Concurrency, 4-Task SWE Architecture, Tool Calling, Structured JSON Schema, Prefix Caching, Socket Abort Recovery, Determinism, Needle Recall, 25-step Precision Ledger, Dynamic Code Unit Testing, and Context Scaling up to 204.8k.
 
 ---
 
-## Linux
+## Target Hardware & Environment
 
-Everything is in the `linux/` folder. Run the scripts from the **kit root**; they
-find their own way regardless of where you call them from.
+- **Operating System:** Ubuntu Linux (tested on **Ubuntu 26.04 LTS / 24.04 LTS Server & Desktop**)
+- **GPU:** **NVIDIA GeForce RTX 4070 Ti SUPER (16 GB GDDR6X)** or any Turing+ 16 GB NVIDIA GPU
+- **NVIDIA Driver:** 570 or newer (default build targets CUDA 12.8 / 13.2)
+- **Host Memory:** 32 GB – 64 GB DDR5 (64 GB recommended for 24 GB host prompt cache)
+- **Python:** 64-bit Python 3.11 – 3.14 (the kit creates and manages its own isolated `.venv/`)
+- **Node.js (Optional):** Node 22.19+ (only required if you want to use the DeepSeek Harness chat UI)
 
-If the files arrived without their execute bit (a zip, a copy off Windows), run them
-as `bash linux/setup.sh` instead of `./linux/setup.sh`, or `chmod +x linux/*.sh linux/simplex` once.
+---
 
-### 1. Install — `./linux/setup.sh`
+## Step-by-Step: Configure and Start ExLlamaV3 Server
 
+### Step 1: Clone the Repository
+```bash
+git clone https://github.com/saas-home/Qwen3.8-27B-NV-16GB.git
+cd Qwen3.8-27B-NV-16GB
+```
+
+### Step 2: Run Automated Setup
+Run the Linux setup script. It inspects your GPU, verifies driver compatibility, creates the isolated `.venv`, installs PyTorch cu128 and ExLlamaV3 v1.5.0, and downloads the 3.0 bpw model weights into `models/`:
 ```bash
 ./linux/setup.sh
 ```
+*(Alternatively, use the unified CLI: `./linux/simplex setup`)*
 
-It creates `.env` from `.env.example` on the first run, asks the profile questions
-**in the terminal** (`tools/profiles.py`) — there is no setup page on Linux — builds
-`.venv`, installs PyTorch and the engine, downloads the weights, and stops. It does
-not load a model.
+### Step 3: Configure `.env` for 16GB GPU (RTX 4070 Ti SUPER)
+The setup script generates a `.env` configuration. Ensure the following production-optimized settings are present:
 
-The download is resumable: interrupt it and run `./linux/setup.sh` again to carry on.
+```ini
+# Model Directory & Context Window
+MODEL_DIR=models/turboderp_Qwen3.8-27B-exl3_3.00bpw
+CONTEXT_SIZE=204800
 
-### 2. Every day after that — `./linux/start.sh`
+# Asymmetric KV Cache (4-bit Keys / 3-bit Values — saves 600 MiB VRAM)
+CACHE_QUANT=4,3
+
+# 2-Slot Parallel Continuous Batching
+PARALLEL=2
+
+# Headless 16 GB VRAM Allocation & Zero-VRAM Vision Offload
+GPU_MEM_GB=15.7
+EXL3_VISION_PINNED=1
+CPU_CACHE_GB=24
+
+# Generation Budget & Multi-Turn Reasoning Hygiene
+MAX_TOKENS=16384
+REASONING_EFFORT=medium
+NO_REASONING_PRESERVE=1
+
+# Networking (OpenAI-compatible API)
+PORT=8888
+HOST=0.0.0.0
+
+# Chat UI (browser, server, or no)
+UI=browser
+SIMPLEX_HARNESS_PORT=3080
+```
+
+### Step 4: Start the Server
+Start the OpenAI-compatible server:
 
 ```bash
-./linux/start.sh                 pick a downloaded model and serve it
-./linux/start.sh --no-harness    serve /v1 only, no chat UI
-./linux/start.sh -b              run in the background, output in logs/
-./linux/start.sh --status        is a backgrounded one running?
+# Foreground execution (displays real-time startup & generation logs)
+./linux/start.sh
+
+# Or start in background mode (daemon)
+./linux/start.sh -b
+
+# Or start without opening the browser chat UI (serve API only)
+./linux/simplex start --no-harness
 ```
 
-It lists the models that finished downloading and asks which one (Enter is the one
-used last; it auto-picks after 45 seconds), then serves:
-
-```
-http://localhost:8888/v1     the OpenAI-compatible API
-http://127.0.0.1:3080/       the chat UI
+To stop the background server at any time:
+```bash
+./linux/stop.sh
 ```
 
-`-b` is the honest equivalent of the Windows tray: it detaches, writes to
-`logs/simplex-*.log`, and tells you where that log is and how to stop it. First-run
-setup and the model menu still happen — written to the log instead of the screen.
+---
 
-**On a box with no desktop session** `webbrowser` has nothing to open, so the chat
-address is printed for you to copy. Take the whole thing, **token and all** — see
-[the note on the token](#the-first-address-is-not-the-plain-one).
+## Connecting Clients & Coding Agents
 
-There is **no free-VRAM preflight on Linux** (that check is Windows-specific,
-because Windows silently spills to system RAM instead of failing). If a load fails
-with `Insufficient VRAM in split for model and cache`, lower `CONTEXT_SIZE` or
-`GPU_MEM_GB` in `.env`, or close what is holding the card.
+The server exposes a standard **OpenAI-compatible `/v1` endpoint**:
 
-No tray icon and no desktop shortcuts either — those are Windows.
+- **API Base URL:** `http://127.0.0.1:8888/v1`
+- **Model Name:** `qwen3.8-27b-exl3-3.0bpw` (or `Qwen3.8-27B`)
+- **API Key:** `local` (or any string; authentication is disabled by default)
+- **DeepSeek Harness Web UI:** `http://127.0.0.1:3080/`
 
-### 3. Stopping — `./linux/stop.sh`
+### Claude Code / Cline / Cursor / Aider Configuration
+In your client or agent settings:
+```json
+{
+  "api_base": "http://127.0.0.1:8888/v1",
+  "model": "qwen3.8-27b-exl3-3.0bpw",
+  "api_key": "local"
+}
+```
+
+---
+
+## Automated Enterprise Benchmark Suite
+
+This repository includes a production evaluation test harness in [`tests/scripts/`](tests/scripts):
 
 ```bash
-./linux/stop.sh                 stop both
-./linux/stop.sh --harness-only  leave the model loaded
-./linux/stop.sh --server-only   leave the chat UI running
-```
+# Activate the environment
+source .venv/bin/activate
 
-### 4. Linux troubleshooting
-
-| symptom | what to do |
-| --- | --- |
-| `bash: ./linux/start.sh: Permission denied` | `chmod +x linux/*.sh linux/simplex`, or call it as `bash linux/start.sh`. |
-| `$'\r': command not found` | The checkout has CRLF endings. `.gitattributes` prevents this; re-clone, or `sed -i 's/\r$//' linux/*.sh linux/simplex`. |
-| Anything else | `./linux/simplex doctor` — see [below](#simplex-doctor). |
-| `Insufficient VRAM in split for model and cache` | Lower `CONTEXT_SIZE` or `GPU_MEM_GB` in `.env`, or run `./linux/simplex setup` and pick a smaller quant. |
-| It compiled the engine for 20 minutes | No prebuilt wheel matched your CUDA line, torch version or Python. See [Prebuilt wheels](#prebuilt-wheels-no-compiler-needed). |
-| aarch64 / GB10 | No prebuilt engine wheel exists on any CUDA line, so it compiles. The script keeps cu130 there and sets `TORCH_CUDA_ARCH_LIST=12.0;12.1` for you. |
-
----
-
-## One command, both systems
-
-The files above are the double-click doors. Every verb, on either system, is
-`simplex` — the same program (`tools/cli.py`), so the two cannot drift apart:
-
-| Linux | Windows |
-| --- | --- |
-| `./linux/simplex <verb>` | `windows\simplex.bat <verb>` |
-
-```
-simplex setup                   install the environment and fetch a model
-simplex start                   load a model and serve it
-simplex start --no-harness      ...serving /v1 only
-simplex start -b                ...in the background, log in logs/
-simplex start -p 9000           ...on another port, just this once
-simplex stop                    stop both
-simplex stop --harness-only     ...and detach the UI, model still loaded
-simplex restart                 stop, then start
-simplex status                  what is running, which model, which ports
-simplex status --json           the same, for scripts
-simplex logs -f                 follow the launcher log
-simplex monitor                 live terminal dashboard for GPU slots & speed
-simplex models                  what is on disk, and what is half-downloaded
-simplex harness start           attach the UI to a server already running
-simplex harness stop|status|open|settings
-simplex doctor                  check this machine before blaming the model
-```
-
-`simplex` with no verb prints the help and then the status. Every verb takes
-`--help`. It is not on your `PATH` — run it from the kit folder.
-
-### simplex doctor
-
-The first thing to run when something is wrong. It checks the Python version, the
-venv and the engine version inside it, the driver and the card, Node, both ports and
-who holds them, the `.env` values that have to be valid, whether the weights are all
-there, and the free disk.
-
-### With or without the chat UI
-
-`UI=` in `.env` is the standing answer (`browser`, `server` or `no`);
-`--harness` / `--no-harness` overrides it for one run, on `simplex start`,
-`linux/start.sh` and `windows\start.bat` alike. The UI is also a verb of its own, so
-it can be attached to a model that is already loaded, or taken away without
-unloading one.
-
----
-
-## What the launcher picks for your GPU
-
-Setup (`windows\START-HERE.bat` / `./linux/setup.sh`, or `simplex setup`, or
-`PROFILE=ask` in `.env`) runs `tools/profiles.py`. It reads the card's VRAM with
-`nvidia-smi`, computes what fits under a budget of *VRAM − max(1.3 GB, 8 %)*, and
-offers the sizes that fit. Enter takes the recommendation. If a model is already
-downloaded, "keep current" is the default, so an unattended start never triggers a
-surprise download.
-
-The choice is written into `.env` (`MODEL_DIR`, `HF_TARGET_REPO`, `HF_REVISION`,
-`MODEL_ID`, `CONTEXT_SIZE`, `CACHE_QUANT`, `GPU_MEM_GB`, `VISION`) and everything
-downstream follows it.
-
-| VRAM | what it offers (**bold** = pre-selected) |
-| --- | --- |
-| 12 GB | **2.0 bpw @ 33k**, text-only — the floor, and the whole menu |
-| 16 GB | 3.5 bpw @ 78k text-only · 3.0 bpw @ 118k with images · **2.5 bpw @ 176k with images** · 2.0 bpw @ 229k with images |
-| 24 GB | 6.0 bpw @ 84k text-only · 5.0 bpw @ 180k with images · **4.0 bpw @ 262k with images** · 3.5 and below at 262k with images |
-| 32 GB+ | the same menu as 24 GB — the top two rows are capped at what a prefill has actually survived, not at what the card could hold |
-
-KV cache supports both symmetric and asymmetric bit-plane quantization:
-- **`CACHE_QUANT=4,3` (4-bit Keys / 3-bit Values)**: **Recommended for 16 GB cards running 204.8k context on ExLlamaV3 v1.5.0**. Quantizes Keys to 4-bit (preserving high-dimensional attentional steering) and Values to 3-bit (8 reconstruction levels). Saves **600 MiB of VRAM** at 200k context (15,284 MiB peak vs. 15,884 MiB baseline), recovering **1,092 MiB (>1 GB) of critical safety headroom** on 16 GB GPUs. Rigorously verified at **100% accuracy** across 16-hop confusable pointer chasing, 8-hop chained dependencies, 60k multi-needle retrieval, algorithmic code execution (25 unit tests), and combinatorial math.
-- **`CACHE_QUANT=4` (symmetric int4)**: Measured within 0.001 KL of fp16; baseline recipe. On 16 GB cards at 200k context, leaves only ~65 MiB free headroom.
-- **`CACHE_QUANT=4,2` (4-bit Keys / 2-bit Values)**: Aggressive saving recipe recovering **1,348 MiB headroom** and boosting decode speed by +6.2% (30.42 tok/s); suitable for high concurrency, but 2-bit Values can exhibit drift in deep (≥8-hop) sequential variable chains.
-- **`CACHE_QUANT=8,4`**: Supported legacy baseline. Picked profiles in `.env` override this.
-
-Each row's download size and the exact context it plans are printed by the planner
-itself, and it will do that for any card without you owning one:
-
-```
-Windows:  .venv\Scripts\python.exe tools\profiles.py --list --vram 16
-Linux:    .venv/bin/python tools/profiles.py --list --vram 16
-```
-
-### Where those numbers come from
-
-Where a real prefill has been run at a stated budget, the menu offers what was
-measured rather than what the formula computes. The context was grown on a 14.7 GB
-budget until a prefill failed (2026-09-06), and the formula had been leaving a lot
-on the table:
-
-| budget | quant | planner offered | measured, text | measured, images |
-| --- | --- | --- | --- | --- |
-| 14.7 GB | 3.5 | 0 | 77824 | 41984 |
-| 14.7 GB | 3.0 | 69888 | 148480 | 117760 |
-| 14.7 GB | 2.5 | 186368 | 212224 | 176128 |
-| 22.1 GB | 6.0 | 8960 | 83712 | 57088 |
-| 22.1 GB | 5.0 | 163072 | 204800 | 179712 |
-| 22.1 GB | 4.0 | 262144 | 262144 | 262144 |
-
-The formula's flat 2.6 GB overhead is a bound over every quant, so on any one of
-them it is slack — 3.5 bpw is the extreme case, priced out of a 16 GB card entirely
-by a formula that the card then ran at 78k tokens, and 6.0 bpw is not far behind at
-9k against 84k. Above the budget a row was measured under, the formula takes over
-again; below it, the measurement only ever lowers the answer.
-
-Two rows are also *capped* at their measurement: nothing has ever prefilled past
-204800 tokens on 5.0 bpw or 83712 on 6.0 bpw, at any budget, so neither plans past
-it. (Their older ceilings — 183296 for 5.0, "nothing survived" for 6.0 — came from a
-run with ~40 other processes on the card, and a clean run at a *tighter* budget beat
-both, which is how you tell contention from a ceiling.)
-
-### How the default is chosen
-
-Bold above is the best quality that still has real context (≥ 128k), not the longest
-context. On a 16 GB card that is the 2.5 bpw row — 3.0 bpw is the better model, but
-it fits 118k there and only text-only, against a measured 176k with images one rung
-down. The pick also keeps images where it can: on a 24 GB card 5.0 bpw clears 128k
-only by dropping the vision tower, so the default steps one rung down to 4.0 bpw,
-which holds native context with images. One rung, never more — and answering
-"no images" puts 5.0 bpw back.
-
-Quants other than the 2.0 bpw baseline are pulled from turboderp's branches
-(`HF_REVISION`); their vision towers are unquantised (0.87 GB measured), which is
-why images are off on the tight profiles. The quality words come from turboderp's
-mean-KL-vs-bf16 figures: 2.0 → 0.35 *fair*, 2.5 → 0.30 *good*, 3.0 → 0.11 *better*,
-3.5 → 0.08 *very good*, 4.0 → 0.05 *very good*, 5.0 → 0.014 *excellent*,
-6.0 → 0.007 *near-lossless*.
-
-### The original 16 GB baseline
-
-A 16 GB board typically has about **14.7 GB free** after the driver. These are the
-hand-tuned settings the 2.0 bpw quant was validated on, and what `.env.example`
-still ships:
-
-| Knob | Value | Why |
-| --- | --- | --- |
-| `GPU_MEM_GB` | `14.7` | Process cap matching ~14.7 GB free on a 16 GB card |
-| `CONTEXT_SIZE` | `199936` | ~200k tokens (must be a multiple of the 256-token page size) |
-| `CACHE_QUANT` | `8,4` | int8 K / int4 V |
-| `DRAFT` | `mtp` (default) | MTP head inside the checkpoint; ~50 MB extra weights |
-
-Measured at load under that cap: CUDA **allocated 12.35 GiB**, **reserved 13.37
-GiB**; native `CONTEXT_SIZE=262144` **fails to boot**
-(`Insufficient VRAM in split for model and cache`). Weights on disk are ~9.7 GB; the
-rest is KV (16 full-attention layers), the MTP draft cache, GDN recurrent state and
-CUDA workspace.
-
-**If you have more than 16 GB:** let the profile planner do it — it already knows.
-By hand, a 24 GB card takes `CONTEXT_SIZE=262144` and `GPU_MEM_GB=22`. Do not do
-that on 16 GB.
-
----
-
-## Multi-Client Concurrency & Continuous Batching Benchmark
-
-Upstream ExLlamaV3 serving historically executes generations sequentially. In multi-agent or IDE scenarios (such as running multiple coding agents like Claude Code, Cline, Cursor, or Aider simultaneously), serial execution forces one agent to stall in silence while waiting for the other agent's long multi-thousand-token thought process to conclude.
-
-In this repository, we engineered true **2-Slot Parallel Continuous Batching (`PARALLEL=2`)** directly into [`tools/serve_openai.py`](tools/serve_openai.py):
-1. **Engine Multi-Slot Batching (`-ambs 2` & `max_batch_size = PARALLEL`)**: Configures ExLlamaV3's `model_init` and `Cache` with `num_slots = PARALLEL`, preventing the engine from clamping active batch size to 1.
-2. **Background Async Dispatcher (`BatchWorker`)**: Decouples GPU generation iteration into an asynchronous thread driving `generator.iterate()`, routing streaming chunk deltas to per-job queues in real time.
-3. **Dynamic Context Headroom Protection**: Continuously clamps `max_tokens` to remaining cache headroom per request, ensuring deep multi-turn agent contexts never trigger out-of-pages assertions or CUDA OOM.
-4. **Live Telemetry & Monitor**: Tracks live GPU active slots, queued jobs, and instantaneous tok/s in `GET /health` and via the `./linux/simplex monitor` dashboard.
-
-### Empirical Head-to-Head Parallel Stress Test
-
-To rigorously verify true concurrent execution, two streaming clients were triggered simultaneously against `http://127.0.0.1:8888/v1/chat/completions` on an **NVIDIA GeForce RTX 4070 Ti SUPER (16 GB)** running **`Qwen3.8-27B-EXL3-3.0bpw`** (`CACHE_QUANT=4,3` @ 204.8k context):
-
-| Metric | Client 1 | Client 2 | Overall Batch Outcome |
-| :--- | :--- | :--- | :--- |
-| **Prompt Task** | 50-item sequential count | 50-item hex color palette | Concurrent streaming |
-| **Launch Timestamp** | 0.000 s | 0.001 s | Launched simultaneously |
-| **Time to First Token (TTFT)** | **344.1 ms** | **369.7 ms** | Sub-400ms parallel start |
-| **Tokens Generated** | 90 tokens | 84 tokens | Full completions |
-| **Completion Timestamp** | **2.834 s** | **2.834 s** | Finished at the exact same millisecond |
-| **Individual Decode Speed** | **36.15 tok/s** | **34.10 tok/s** | Balanced GPU resource sharing |
-| **Active Stream Overlap** | **2.46 s** *(both actively emitting tokens side-by-side)* | **Zero serialization stall** |
-| **Peak GPU Active Slots** | **2 / 2** active in ExLlamaV3 continuous batch | Continuous multi-job forward pass |
-| **Combined GPU Throughput** | **70.25 tok/s** aggregate decode speed | **+58% throughput gain** over single-client (44.5 tok/s) |
-
-```
-Server Log:
--> [02:26:23] request: stream=True, max_tokens=100, msgs=1, thinking=True
--> [02:26:23] request: stream=True, max_tokens=100, msgs=1, thinking=True
-<- [02:26:25] done: finish=length, prompt_toks=56, out_toks=100
-<- [02:26:25] done: finish=length, prompt_toks=61, out_toks=100
-```
-
-### Real-World Production Workload: 2 Concurrent Coding Agents
-
-In live real-world tests connecting two autonomous coding agents simultaneously:
-* **Deep Context Stability**: Sustained **58,258 tokens (Agent 1) + 61,602 tokens (Agent 2)**—a combined **119,860 tokens actively resident in VRAM**—with over 84,940 tokens of remaining free safety headroom under the 204,800 limit.
-* **Massive Token Throughput**: Processed over **3,000,000+ prompt tokens** and generated **87,000+ completion tokens** across dozens of rapid conversational turns without a single dropped connection, OOM, or memory leak.
-* **Cooperative Memory Bandwidth**: Because decoding is memory-bandwidth bound, reading the 27B model weights once from GDDR6X to compute tokens for *both* agents simultaneously maximized GPU utilization (**98% GPU compute load, 284W TDP**) and yielded faster collective project completion.
-
----
-
-## Enterprise Production Evaluation & Benchmark Suite
-
-This repository includes a comprehensive, automated 14-stage enterprise production evaluation and benchmarking harness located in [`tests/scripts/`](tests/scripts):
-
-```bash
-# Run the complete 14-stage qualification suite non-interactively
+# 1. Run the full 14-stage qualification suite non-interactively
 python3 tests/scripts/llm_server_full_test.py --endpoint http://127.0.0.1:8888/v1 --auto
 
-# Run specific tests (e.g. only Test 14 Context Scaling)
+# 2. Run only Context Scaling benchmark (Test 14)
 python3 tests/scripts/llm_server_full_test.py --test 14
 
-# Run specific tests by name (e.g. precision ledger and dynamic code unit testing)
-python3 tests/scripts/llm_server_full_test.py --test precision,code
-
-# Run with custom context milestones (e.g. test 200k and 204k directly)
+# 3. Test specific context milestones (e.g. verify 200k and 204k ceiling directly)
 python3 tests/scripts/llm_server_full_test.py --test 14 --milestones 200000 203800
+
+# 4. Run precision ledger and dynamic code execution tests
+python3 tests/scripts/llm_server_full_test.py --test precision,code
 ```
 
-### Empirical 14-Stage Capability Scorecard
+### Empirical 204K Context Scaling Benchmark (RTX 4070 Ti SUPER 16 GB)
 
-Empirically verified on an **NVIDIA GeForce RTX 4070 Ti SUPER (16 GB)** running **`Qwen3.8-27B-EXL3-3.0bpw`** (`CACHE_QUANT=4,3` @ 204.8k context):
+Empirical cold-prefill performance (prompt salting enabled to isolate hardware throughput from cache hits):
 
-| Evaluation Domain | Status | Key Metric / Latency | Throughput |
-| :--- | :---: | :--- | :--- |
-| **1. Streaming & Latency** | **PASS** | TTFT: `180.6 ms` | `44.77 tok/s` |
-| **2. Multimodal Vision (Invoice)** | **PASS** | TTFT: `1064.7 ms` (Invoice & total detected) | `43.32 tok/s` |
-| **3. Parallel Concurrency (`PARALLEL=2`)** | **PASS** | `2.37 s` wall time | `42.17 tok/s` (agg) |
-| **4. 4-Task SWE Architecture Suite** | **PASS** | 4/4 passed (AVL Tree, Concurrency, Rate Limiter, Constraints) | `43.20 tok/s` (avg) |
-| **5. Tool / Function Calling Protocol** | **PASS** | Strict JSON arguments extracted and verified | TTFT: `3476.6 ms` |
-| **6. JSON Schema Mode (`response_format`)** | **PASS** | Strict schema conformance and valid JSON generation | `42.44 tok/s` |
-| **7. Prefix / KV Cache Reuse** | **PASS** | **3.93x speedup** (Cold: `6.192 s` → Warm: `1.574 s`) | Host slots active |
-| **8. Client Socket Abort Recovery** | **PASS** | Engine slot recovery latency: `301.3 ms` | Slots released |
-| **9. Stop Sequences & Greedy Sampling** | **PASS** | Deterministic reproducible generation (`temperature=0.0`) | Tokens suppressed |
-| **10. High-Entropy Key-Value Recall** | **PASS** | Needle-in-a-haystack recall with safety-reasoning resilience | `42.79 tok/s` |
-| **11. Precision Ledger Reconciliation** | **PASS** | Exact ending balance `$11,489.41` matched across 25 steps | `43.13 tok/s` |
-| **12. Executable Code Unit Testing** | **PASS** | Generated `LRUCache` dynamically passed unit assertions | `43.16 tok/s` |
-| **13. API Error Protocol Compliance** | **PASS** | HTTP 400/422 correctly handled for invalid inputs | Protocol OK |
-| **14. Dynamic Context Scaling (4k → 204k)**| **PASS** | Tested 4k → 203.8k tokens with 0 failures or OOM | `603.7` prefill / `29.12` decode |
-
-### Verified Context Scaling Ladder (Cold Prefill vs. Decode Throughput)
-
-Using unique prompt salting to test true physical hardware performance without warm cache distortions:
-
-| Milestone Target | Ingested Prompt | Cached | Prefill TTFT | Cold Prefill Rate | Decode Speed | Status |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **~4k** | 4,047 toks | 0 | 2.89 s | **1,401.5 tok/s** | 44.47 tok/s | **PASS** |
-| **~8k** | 8,055 toks | 0 | 5.57 s | **1,447.4 tok/s** | 44.63 tok/s | **PASS** |
-| **~16k** | 16,064 toks | 0 | 11.50 s | **1,396.7 tok/s** | 43.59 tok/s | **PASS** |
-| **~32k** | 32,035 toks | 0 | 25.12 s | **1,275.5 tok/s** | 41.84 tok/s | **PASS** |
-| **~64k** | 64,037 toks | 0 | 60.45 s | **1,059.3 tok/s** | 38.62 tok/s | **PASS** |
-| **~128k** | 128,074 toks | 0 | 162.38 s | **788.7 tok/s** | 33.51 tok/s | **PASS** |
-| **~200k** | 200,067 toks | 0 | 327.56 s (~5.4 min) | **610.8 tok/s** | 29.30 tok/s | **PASS** |
-| **~204k (Max Ceiling)** | **203,852 toks** | **0** | **337.69 s (~5.6 min)** | **603.7 tok/s** | **29.12 tok/s** | **PASS** |
+| Context Milestone | Ingested Prompt | Cold Prefill TTFT | Cold Prefill Rate | Sustained Decode Speed | Status |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **~4k** | 4,047 toks | 2.89 s | **1,401.5 tok/s** | **44.47 tok/s** | **PASS** |
+| **~8k** | 8,055 toks | 5.57 s | **1,447.4 tok/s** | **44.63 tok/s** | **PASS** |
+| **~16k** | 16,064 toks | 11.50 s | **1,396.7 tok/s** | **43.59 tok/s** | **PASS** |
+| **~32k** | 32,035 toks | 25.12 s | **1,275.5 tok/s** | **41.84 tok/s** | **PASS** |
+| **~64k** | 64,037 toks | 60.45 s (1.0 min) | **1,059.3 tok/s** | **38.62 tok/s** | **PASS** |
+| **~128k** | 128,074 toks | 162.38 s (2.7 min) | **788.7 tok/s** | **33.51 tok/s** | **PASS** |
+| **~200k** | 200,067 toks | 327.56 s (5.5 min) | **610.8 tok/s** | **29.30 tok/s** | **PASS** |
+| **~204k (Hardware Cap)** | **203,852 toks** | **337.69 s (5.6 min)** | **603.7 tok/s** | **29.12 tok/s** | **PASS** |
 
 ---
 
-## Chat with the model
+## Technical Documentation & In-Depth Whitepaper
 
-### The DeepSeek Harness
+For in-depth mathematical derivations, asymmetric quantization accuracy proofs across 16-hop confusable pointer chasing, and head-to-head empirical evaluations against `llama.cpp` (`llama-server`), see:
 
-The kit serves the model. What you talk to is
-**[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)** (`dsh`, MIT),
-started as a second process once the model is loaded and answering, at
-**`http://127.0.0.1:3080/`**. `windows\start.bat` and `./linux/start.sh` open it for
-you; `http://127.0.0.1:8888/` is a small page saying where everything is, which
-forwards there as soon as the harness answers.
-
-None of it is vendored here. It is a Node application, so the launcher runs it with
-`npx` and npm caches it after the first run — which is why **Node** is on the
-requirements list. No Node, no harness: the launcher says so, and `/v1` keeps
-serving every other client. `UI=no` in `.env` skips it entirely.
-
-**It configures itself against whatever loaded.** Before starting the harness,
-`tools/dsh.py` asks the running server on `/v1/models` what it actually is — the
-model id, the context window, whether the vision tower fit, and which reasoning
-levels this chat template accepts *and acts on* — and writes that as a provider
-route into `.dsh/settings.yaml`, naming it as the default the picker opens on. So
-the model, its context meter, its image support and its effort menu are right on the
-first launch with nothing typed into a form. After a fallback (no room for the
-vision tower, say) the harness is told what happened rather than what `.env` hoped
-for. Switching quants rewrites the same file; the harness re-reads it per request,
-so it never needs restarting.
-
-Those keys are yours the moment you edit them. The launcher keeps a copy of what it
-last wrote beside the file and stops generating as soon as they differ, so a
-hand-tuned route survives every restart. Delete the file to get a fresh one.
-Everything else in it is read past and written back untouched. Every field it
-accepts is in
-[dsh's configuration catalog](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/config-catalog.md).
-
-#### The first address is not the plain one
-
-dsh authenticates the browser with a token it mints fresh on every launch and prints
-once, as `dsh web: http://127.0.0.1:3080/?token=...`. Opening **that** sets a cookie
-good for thirty days and redirects to a clean `/`; arriving at the bare address
-without it answers *"dsh web authentication required; reopen the URL printed by dsh
-web"*. So the launcher reads the address off dsh's own output rather than composing
-it from the port, and `http://127.0.0.1:8888/` forwards through `/harness`, which
-knows the current one. If you need it by hand, it is in the launcher window and in
-`logs/`.
-
-That route only answers a browser on this computer, even with `HOST=0.0.0.0`: the
-token is a session on an agent that runs commands here.
-
-| | |
-| --- | --- |
-| Harness | `http://127.0.0.1:3080/` (`SIMPLEX_HARNESS_PORT` in `.env`; do not use `DSH_PORT` there) |
-| Version | `DSH_VERSION` in `.env`, pinned; `latest` follows the newest |
-| Its home | `.dsh/` in the kit folder — settings, credentials, profiles, plugins |
-| Run it alone | From the **kit root** (not `C:\Windows\System32`): `python tools/dsh.py --open`. PowerShell: `Set-Location -LiteralPath <kit>`; cmd: `cd /d <kit>`. `cd /d` is not valid in PowerShell. |
-| Just the settings | `tools/dsh.py --settings-only` |
-
-The harness binds loopback only and **refuses to bind `0.0.0.0` at all**: its agent
-runs commands on this PC and there is no login. To reach it from a phone, put a
-proxy in front of it rather than opening the port — `tailscale serve --bg 3080`.
-Note that the shipped `HOST=0.0.0.0` already exposes `/v1` (the API, not the
-harness) to whatever network you are on; set `HOST=127.0.0.1` if that network is not
-yours.
-
-Its workspace, approval policy, tools, MCP servers and plugins are all its own — see
-[its documentation](https://deepseek-harness.github.io/deepseek-harness/). Pick a
-workspace folder in it before the first message.
-
-### Any other OpenAI client
-
-`/v1` is a plain OpenAI endpoint, so nothing about the harness is compulsory. Leave
-`windows\start.bat` / `./linux/start.sh` running and point a client at it. There is
-**no API key**; many apps still require a dummy value such as `local`.
-
-| | |
-| --- | --- |
-| Base URL | `http://127.0.0.1:8888/v1` (or host `http://127.0.0.1:8888` if the app appends `/v1` itself) |
-| API key | `local` (ignored) |
-| Model id | whatever `MODEL_ID` in `.env` says — e.g. `qwen3.8-27b-exl3-2.5bpw` for the 2.5 bpw quant. `simplex status` prints it, and so does `GET /v1/models`. |
-
-Chatbox, Open WebUI, Continue, Cursor's custom endpoint, Cherry Studio (below), a
-`curl`, an SDK, another machine on your network — all of them work against that base
-URL, at the same time as the harness does. Open WebUI is stronger if you want a big
-tools/RAG UI and are fine running Docker.
-
-**Tool calling.** Send OpenAI `tools` (function name + JSON schema) on
-`POST /v1/chat/completions`. The model emits Qwen XML; the server parses it into
-`tool_calls`. Your app must run the function and POST a follow-up with
-`role: "tool"` (and the previous assistant `tool_calls`). `tool_choice` of `auto`,
-`required`, or a named function is supported.
-
-```bash
-curl http://127.0.0.1:8888/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "qwen3.8-27b-exl3-2.5bpw",
-    "messages": [{"role": "user", "content": "What is the weather in Tel Aviv?"}],
-    "tools": [{
-      "type": "function",
-      "function": {
-        "name": "get_weather",
-        "description": "Current weather for a city",
-        "parameters": {
-          "type": "object",
-          "properties": {"city": {"type": "string"}},
-          "required": ["city"]
-        }
-      }
-    }]
-  }'
-```
-
-Plain chat (no tools):
-
-```bash
-curl http://127.0.0.1:8888/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"qwen3.8-27b-exl3-2.5bpw","messages":[{"role":"user","content":"Hi"}]}'
-```
-
-**Images.** The quants keep Qwen3.8's vision tower and the server loads it by
-default (`VISION=auto`), so you can send OpenAI `image_url` content parts — `data:`
-URLs or http(s) links. Pictures are downscaled to `IMAGE_MAX_PIXELS`
-(1 MP ≈ 1024 prompt tokens) before encoding. If the tower does not fit next to your
-context under the VRAM cap, the Ready box says `Images: off` and the server keeps
-running text-only — lower `CONTEXT_SIZE` and restart, or pick a quant whose profile
-says images are on. Video is not supported.
-
-Defaults: temperature 0.6, top-p 0.95, top-k 20, thinking on. One request at a time;
-extras queue.
-
-### Cherry Studio (optional, off by default)
-
-The kit used to ship [Cherry Studio](https://github.com/CherryHQ/cherry-studio) as
-its chat app. It is still wired up for anyone who wants Cherry's assistants,
-knowledge bases and MCP servers — set `CHERRY_AUTOSTART=ask` (or `yes`) in `.env`:
-
-* The launcher downloads the pinned **portable** build (v2.0.10, ~285 MB, once) into
-  `apps/cherry-studio/`. Nothing is installed system-wide; Cherry keeps its data in
-  `apps/cherry-studio/data/`.
-* The first time, Cherry opens and closes once by itself to create that data folder.
-  The kit then writes its configuration straight into Cherry's store: provider
-  **Simplex (local)** → `http://127.0.0.1:8888/v1`, key `local`, the model id from
-  `.env` (tool calling + image input on), set as the default chat model and on the
-  default assistant, onboarding skipped. Usage analytics is switched off
-  (Cherry → Settings → Privacy to change).
-* After the **Ready** box: *"Open Cherry Studio and start chatting now? [Y/n]"*.
-  Enter/`y` opens it (the portable build unpacks for ~10–20 s), `n` or no answer
-  within 90 s leaves it closed. Keep the server window open while chatting.
-* Changing `PORT` in `.env` re-points the provider on the next start. Open Cherry
-  later without the prompt: `.venv\Scripts\python.exe tools\cherry.py open` on
-  Windows, `.venv/bin/python tools/cherry.py open` on Linux (`status` instead of
-  `open` shows what the kit thinks).
-* `.env` knobs: `CHERRY_AUTOSTART=ask|yes|no` (`no` also skips the download),
-  `CHERRY_VERSION` (pinned; the store layout is checked against v2.0.x),
-  `CHERRY_EXE=<path>` to use a Cherry Studio you already installed — the kit then
-  only sends Cherry's official import link (`cherrystudio://providers/api-keys`),
-  you confirm the popup and add the model id under the new provider.
-* **Web search and tools are on by default.** The default assistant gets
-  `web_search` + `web_fetch` as function tools (Cherry's stock keyless search
-  provider, Exa MCP at `mcp.exa.ai`; change it under Settings → Web Search), runs
-  MCP in *auto* mode, and the kit installs Cherry's keyless builtin MCP servers
-  `@cherry/fetch` and `@cherry/sequentialthinking`. Tune with
-  `CHERRY_WEB_SEARCH=1|0` and `CHERRY_MCP_SERVERS=` (also `@cherry/python`,
-  `@cherry/browser`; empty = none) in `.env` — re-applied on the next start when you
-  change them. New assistants you create in Cherry start with Cherry's own defaults
-  (web search off) unless you copy the default one.
-* Cherry Studio is [AGPL-3.0](https://github.com/CherryHQ/cherry-studio/blob/main/LICENSE)
-  (see its README for the commercial-use terms); the kit downloads the official
-  release binary and does not redistribute it.
+📄 **[Qwen3.8-27B-NV-16GB-Optimization-Whitepaper.md](Qwen3.8-27B-NV-16GB-Optimization-Whitepaper.md)**
 
 ---
 
-## Prebuilt wheels: no compiler needed
+## Upstream & Acknowledgements
 
-Compiling the ExLlamaV3 CUDA kernels is the slowest and most fragile part of setup:
-it wants the CUDA Toolkit and Visual Studio Build Tools, several GB of downloads that
-have nothing to do with chatting to a model. Nobody has to do it, because the engine
-publishes wheels itself.
-
-Simplex looks for one in this order:
-
-1. **`wheels/`** in the kit folder — what you copy off a USB stick.
-2. **The engine's own release** — `turboderp-org/exllamav3` attaches a wheel per
-   (CUDA line × torch version × Python). This is the normal path and needs no
-   configuration.
-3. **`WHEEL_INDEX`** in `.env` — one or more `pip --find-links` targets (a GitHub
-   Releases page, a file share, an internal index).
-4. **PyPI**, which has `triton-windows` but not `exllamav3`.
-5. **Compiling from source**, for the cases none of the above covers — a CUDA line
-   or platform the engine has no build for (aarch64/GB10), or no route to
-   github.com.
-
-Step 2 resolves to one exact URL rather than pointing pip at the release page, and
-that distinction matters. The CUDA line and torch version live in the wheel's *local
-version* (`1.4.4+cu128.torch2.10.0`), which pip does not match against anything:
-given `--find-links` it filters on the Python and platform tags only, then takes the
-highest version string. A torch 2.10 environment would be handed the torch 2.11
-build, and the failure arrives later as an undefined-symbol `ImportError` that reads
-like a corrupt install. So the launcher installs torch first, asks the venv what it
-actually got, and names the one wheel that fits.
-
-This is also why the default PyTorch index is **cu128**: the engine builds for cu128
-and cu132 only, so torch from any other line means no wheel exists and everyone
-compiles. cu128 covers Blackwell and needs driver 570+. (`TORCH_INDEX_URL` in `.env`
-overrides it. aarch64 keeps cu130, since no engine wheel exists there on any line.)
-
-A wheel is only used when its Python, ABI and platform tags match the interpreter it
-is going into, so a `cp313` wheel can never land in a `cp312` environment. Check what
-would be picked:
-
-```
-Windows:  .venv\Scripts\python.exe tools\wheels.py
-Linux:    .venv/bin/python tools/wheels.py
-```
-
-That prints the venv's tags, the torch version and CUDA line found, and the wheel it
-would install. `wheels/README.md` covers the override cases and the recipe for
-building one yourself.
-
-**Engine version.** This kit requires **ExLlamaV3 >= v1.4.4** (defaulting to **v1.5.0**) — v1.4.4+ is what the quantized
-vision tower needs, and v1.5.0 delivers zero-copy pinned host memory arena mode and kernel optimizations. Engine:
-[ExLlamaV3](https://github.com/turboderp-org/exllamav3).
-
----
-
-## Installing on a Windows PC as an app
-
-Unzip (or clone) anywhere, double-click `windows\START-HERE.bat`, then
-`windows\start.bat` from then on. There is no system-wide install and no
-administrator rights are needed; the first successful launch adds the Start-menu and
-desktop shortcuts for you (`SHORTCUTS=no` in `.env` to skip that).
-
-Whether the browser offers an **Install** button for the chat page depends on the
-front end you use, not on this kit. Installing only ever works on `localhost` or over
-HTTPS (a secure context); over a plain `http://` LAN address browsers refuse to
-register a service worker, so there the page stays an ordinary one.
-
----
-
-## Configuration
-
-`.env` in the kit folder, created from `.env.example` on the first run of either
-system. It is read as a `key=value` list, not executed, so values with spaces are
-fine. The ones you are most likely to touch:
-
-| key | default | what it does |
-| --- | --- | --- |
-| `MODEL_DIR` | set by setup | which downloaded model to load |
-| `CONTEXT_SIZE` | set by setup | tokens; must be a multiple of 256 |
-| `CACHE_QUANT` | `4,3` | `4,3` (recommended 4-bit K / 3-bit V — saves 600 MiB), `4,2` (saves 856 MiB), `4` (symmetric int4), `8,4`, or `none` |
-| `PARALLEL` | `2` | maximum concurrent / parallel requests generating on GPU simultaneously (additional requests queue in FIFO order) |
-| `MAX_TOKENS` | `16384` | ceiling on one answer / maximum generation tokens per request (clamp-protected by available context headroom) |
-| `REASONING_EFFORT` | `medium` | reasoning effort / thinking budget: `high` (unlimited), `medium`, `low`, or `off` |
-| `NO_REASONING_PRESERVE` | `1` | `1` strips internal `<think>` blocks from prior assistant turns to prevent multi-turn context bloat (`0` to keep) |
-| `GPU_MEM_GB` | set by setup | the process's VRAM budget |
-| `VISION` | `auto` | `off` to skip the vision tower |
-| `PORT` | `8888` | the OpenAI API port |
-| `HOST` | `0.0.0.0` | set to `127.0.0.1` to keep `/v1` off your network |
-| `UI` | `browser` | `browser`, `server`, or `no` |
-| `SIMPLEX_HARNESS_PORT` | `3080` | the chat UI's port. Do **not** set `DSH_PORT` in `.env` — current dsh treats that key in a file as fatal and the harness never binds |
-| `DRAFT` | `mtp` | `none` turns off speculative decoding |
-| `SETUP` | `browser` | `console` for terminal questions on Windows |
-| `TRAY` | `auto` | Windows notification-area icon; `no` to skip |
-| `SHORTCUTS` | `auto` | Windows shortcuts; `no` to skip |
-| `HF_TOKEN` | — | only needed for gated repos |
-
-`.venv/`, `models/`, `logs/`, `apps/`, `.dsh/` and `.env` stay on your machine and
-are not part of the git tree.
-
----
-
-## Simplex, the UI this kit used to ship
-
-Up to this version the kit served its own chat and agent UI in the server process.
-That UI is now **Simplex**, a standalone project: nothing in it was specific to this
-model or this server, and it talks to any OpenAI-compatible endpoint — including this
-one, at `http://127.0.0.1:8888/v1`. Its conversations, projects and providers moved
-with it, so an existing install picks up where it left off. Run its own launcher
-beside this one and set `UI=no` here if you want it back in place of the harness, or
-run both.
+- **Base Project:** [`MiaAI-Lab/Qwen3.8-27B-16gb-NVIDIA-GPUs-one-click-install`](https://github.com/MiaAI-Lab/Qwen3.8-27B-16gb-NVIDIA-GPUs-one-click-install) by [Mia's AI Lab](https://x.com/MiaAI_lab) (Windows/Linux setup scripts, harness launcher, and unified CLI architecture).
+- **Inference Engine:** [ExLlamaV3](https://github.com/turboderp-org/exllamav3) by [turboderp](https://huggingface.co/turboderp).
+- **Model:** [Qwen/Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B) by the Qwen Team, Alibaba Cloud.
+- **Chat UI:** [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) by DeepSeek AI.
 
 ## License
 
-Apache-2.0 (inherited from the base model). Kit scripts: [MIT](LICENSE).
+- Base model weights and architecture: **Apache-2.0**
+- Serving kit scripts and optimizations: **MIT**
