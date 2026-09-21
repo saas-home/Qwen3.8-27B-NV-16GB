@@ -193,21 +193,19 @@ The server exposes a standard **OpenAI-compatible endpoint**:
 To use this 204.8k context server with [Pi Agent](https://github.com/badlogic/pi-mono), add the following configuration to `~/.pi/agent/models.json`:
 
 ```json
+
 {
   "providers": {
     "local-openai": {
-      "baseUrl": "http://127.0.0.1:8888/v1",
+      "baseUrl": "http://172.16.16.43:8888/v1",
       "apiKey": "local-placeholder",
       "api": "openai-completions",
       "models": [
         {
           "id": "qwen3.8-27b",
-          "name": "Qwen3.8 27B (204.8k Context - 16GB)",
-          "contextWindow": 204800,
-          "maxTokens": 16384,
-          "compat": {
-            "supportsDeveloperRole": false
-          }
+          "name": "qwen3.8-27b",
+          "contextWindow": 262144,
+          "maxTokens": 16384
         }
       ]
     }
