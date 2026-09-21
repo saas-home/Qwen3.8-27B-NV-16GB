@@ -11,9 +11,11 @@ Tests:
 import json
 import time
 import urllib.request
+import urllib.error
 from urllib.parse import urljoin
 import threading
 import argparse
+import os
 from concurrent.futures import ThreadPoolExecutor
 
 DEFAULT_API_URL = "http://127.0.0.1:8888/v1/chat/completions"
@@ -30,15 +32,18 @@ SAMPLE_PROMPTS = [
     "Write a detailed Python class implementing an LRU cache using a doubly linked list and hash map."
 ]
 
-def check_health(health_url):
+def check_health(health_url, api_key=""):
     try:
-        req = urllib.request.Request(health_url)
+        headers = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        req = urllib.request.Request(health_url, headers=headers)
         with urllib.request.urlopen(req, timeout=5) as r:
             return json.loads(r.read().decode("utf-8"))
     except Exception as e:
         return {"error": str(e)}
 
-def client_task(client_id, prompt, api_url, model, max_tokens, temperature, results, lock):
+def client_task(client_id, prompt, api_url, model, max_tokens, temperature, results, lock, api_key=""):
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -48,7 +53,10 @@ def client_task(client_id, prompt, api_url, model, max_tokens, temperature, resu
         "stream_options": {"include_usage": True}
     }
     data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(api_url, data=data, headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    req = urllib.request.Request(api_url, data=data, headers=headers)
     
     t_start = time.perf_counter()
     t_first = None
@@ -76,13 +84,13 @@ def client_task(client_id, prompt, api_url, model, max_tokens, temperature, resu
                     error_msg = str(chunk["error"])
                     break
                     
-                if "usage" in chunk and chunk["usage"]:
-                    prompt_tokens = chunk["usage"].get("prompt_tokens", 0)
-                    completion_tokens = chunk["usage"].get("completion_tokens", 0)
-                
                 choices = chunk.get("choices") or []
                 if choices:
-                    delta = choices[0].get("delta", {})
+                    choice = choices[0]
+                    if choice.get("finish_reason") == "error":
+                        error_msg = "Stream terminated with finish_reason: error"
+                        break
+                    delta = choice.get("delta", {})
                     content = delta.get("content") or delta.get("reasoning_content")
                     if content:
                         now = time.perf_counter()
@@ -90,6 +98,10 @@ def client_task(client_id, prompt, api_url, model, max_tokens, temperature, resu
                             t_first = now
                         t_last = now
                         token_count += 1
+
+                if "usage" in chunk and chunk["usage"]:
+                    prompt_tokens = chunk["usage"].get("prompt_tokens", 0)
+                    completion_tokens = chunk["usage"].get("completion_tokens", 0)
     except Exception as e:
         error_msg = str(e)
 
@@ -120,9 +132,10 @@ def main():
     parser.add_argument("--url", default=DEFAULT_API_URL, help="API completions endpoint URL")
     parser.add_argument("--health-url", default=None, help="Server health endpoint URL")
     parser.add_argument("--model", default="qwen3.8-27b-exl3-3.0bpw", help="Model ID")
-    parser.add_argument("--concurrency", "-c", type=int, default=4, help="Number of concurrent clients (default: 4)")
+    parser.add_argument("--parallel", "-p", "--concurrency", "-c", type=int, default=4, help="Number of concurrent clients (default: 4)")
     parser.add_argument("--tokens", "-t", type=int, default=128, help="Max generation tokens per client (default: 128)")
     parser.add_argument("--temperature", type=float, default=0.7, help="Sampling temperature (default: 0.7)")
+    parser.add_argument("--api-key", default=os.getenv("OPENAI_API_KEY", ""), help="API key")
     args = parser.parse_args()
 
     health_url = args.health_url
@@ -137,22 +150,22 @@ def main():
     print(f"Target URL   : {args.url}")
     print(f"Health URL   : {health_url}")
     print(f"Model ID     : {args.model}")
-    print(f"Concurrency  : {args.concurrency} concurrent client requests")
+    print(f"Parallelism  : {args.parallel} concurrent client requests")
     print(f"Max Tokens   : {args.tokens} tokens/client")
     print(f"Temperature  : {args.temperature}")
     print("=" * 80)
 
-    h_before = check_health(health_url)
+    h_before = check_health(health_url, api_key=args.api_key)
     print(f"Health check before test: {h_before}\n")
 
     results = {}
     lock = threading.Lock()
     
     # Assign prompts to clients
-    prompts = [SAMPLE_PROMPTS[i % len(SAMPLE_PROMPTS)] for i in range(args.concurrency)]
+    prompts = [SAMPLE_PROMPTS[i % len(SAMPLE_PROMPTS)] for i in range(args.parallel)]
 
     t0 = time.perf_counter()
-    with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
+    with ThreadPoolExecutor(max_workers=args.parallel) as executor:
         futures = [
             executor.submit(
                 client_task,
@@ -163,21 +176,22 @@ def main():
                 args.tokens,
                 args.temperature,
                 results,
-                lock
+                lock,
+                args.api_key
             )
-            for i in range(args.concurrency)
+            for i in range(args.parallel)
         ]
         
         # Probe health shortly after launching all requests
         time.sleep(0.5)
-        h_mid = check_health(health_url)
+        h_mid = check_health(health_url, api_key=args.api_key)
         print(f"Health check during active generation: {h_mid}\n")
         
         for f in futures:
             f.result()
 
     t_total = time.perf_counter() - t0
-    h_after = check_health(health_url)
+    h_after = check_health(health_url, api_key=args.api_key)
     print(f"Health check after test: {h_after}\n")
 
     total_tokens = sum(r["completion_tokens"] for r in results.values() if not r.get("error"))
