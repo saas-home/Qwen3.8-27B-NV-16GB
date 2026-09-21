@@ -11,9 +11,9 @@
 
 <p align="center">
   <a href="#-quickstart-ubuntu-2604--2404"><b>⚡ Quickstart</b></a> •
-  <a href="#-key-benefits-upstream-vs-this-fork"><b>🚀 Upstream vs. Fork</b></a> •
+  <a href="#-key-benefits-over-upstream-baseline"><b>🚀 Key Benefits</b></a> •
   <a href="#-memory--serving-architecture"><b>🧠 Architecture</b></a> •
-  <a href="#-configuration-guide-env"><b>⚙️ Configuration</b></a> •
+  <a href="#step-3-production-configuration-env"><b>⚙️ Configuration</b></a> •
   <a href="#-connecting-clients--coding-agents"><b>🔌 Client Integrations</b></a> •
   <a href="#-automated-enterprise-qualification-suite"><b>📊 Benchmarks</b></a> •
   <a href="#-in-depth-technical-whitepaper"><b>📄 Whitepaper</b></a>
@@ -35,9 +35,30 @@ Standard desktop setups truncate context to ~117k tokens and serialize multi-age
 
 ---
 
-## 🚀 Key Benefits: Upstream vs. This Fork
+## 🚀 Key Benefits (Over Upstream Baseline)
 
-This fork delivers **13 critical architectural improvements** over the upstream baseline:
+### 🧠 1. Extreme Context & Memory Tiering
+* **Full 204.8k Context Window (+73.9%):** Expands context from upstream's truncated ~117k tokens to **204,800 tokens (~800 continuous pages)**, certified up to 203,852 tokens (99.54% of hardware ceiling) with zero OOM crashes.
+* **Asymmetric KV Cache (`CACHE_QUANT=4,3`):** 4-bit Key / 3-bit Value quantization saves **600 MiB VRAM**, restoring **>1 GB safety headroom** while preserving 100% precision in 16-hop needle retrieval.
+* **Zero-VRAM Multimodal Vision (`EXL3_VISION_PINNED=1`):** Offloads vision tower to host DDR5 RAM, consuming **0.00 GB GPU VRAM** during text generation with **1.06s TTFT** invoice parsing.
+* **24 GB DDR5 Host Prompt Cache (`CPU_CACHE_GB=24`):** Secondary host RAM tier enables **sub-second TTFT (0.91s at 200k tokens)** on iterative agent turns.
+
+### ⚡ 2. Concurrency, Throughput & Silicon Tuning
+* **Continuous Multi-Client Batching (`PARALLEL=2`):** Replaces upstream's serial request lock with concurrent batching, delivering **+58% aggregate throughput (70.25 tok/s)** across dual streams.
+* **Automated Headless VRAM Detection (`is_headless()`):** Drops desktop compositor reserve from 1.3 GB to 0.3 GB on Linux servers, expanding usable VRAM to **15.7 GB**.
+* **AMD Ryzen 3D V-Cache Affinity (`AFFINITY=0-7,16-23`):** Pinned exclusively to CCD0, eliminating cross-CCD interconnect latency penalties on Ryzen 9 7950X3D CPUs.
+* **Dynamic Semver Compatibility (v1.5.0+):** Forward-compatible version parsing enables ExLlamaV3 v1.5.0 kernel optimizations and CUDA 12.8 / 13.2 support.
+
+### 🛡️ 3. Production Reliability & Reasoning Hygiene
+* **Dynamic Headroom Clamping:** Automatically clamps output tokens against remaining KV cache pages, eliminating `AssertionError` crashes during deep conversations.
+* **16k Output Generation Ceiling (`MAX_TOKENS=16384`):** Raises default cap from 1,024 to 16,384 tokens, preventing cutoffs during complex coding and long reasoning chains.
+* **Conversational Reasoning Hygiene (`NO_REASONING_PRESERVE=1`):** Strips historical `<think>` tokens from prior turns to prevent conversational context bloat.
+
+### 🧪 4. Observability & Enterprise Qualification
+* **Live Serving Telemetry (`tools/monitor.py`):** Real-time terminal dashboard tracking active slots, token throughput, and VRAM state.
+* **14-Stage Enterprise Qualification Suite (`tests/scripts/`):** Full automated test harness validating streaming, vision, tools, schemas, socket aborts, and 204k context ladder.
+
+### 📊 Detailed Upstream vs. Fork Comparison
 
 | Architectural Dimension | Upstream Baseline (`MiaAI-Lab`) | This Fork (`saas-home/Qwen3.8-27B-NV-16GB`) | Operational Advantage |
 | :--- | :--- | :--- | :--- |
