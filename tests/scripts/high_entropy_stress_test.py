@@ -245,9 +245,10 @@ def main():
     print("="*80)
     for r in results:
         status = "PASSED" if r["passed"] else "FAILED"
-        print(f" - {r['name']:<45} : {status}")
         
-    os.makedirs(os.path.dirname(args.out), exist_ok=True)
+    out_dir = os.path.dirname(args.out)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
     print(f"\nSaved results to {args.out}")

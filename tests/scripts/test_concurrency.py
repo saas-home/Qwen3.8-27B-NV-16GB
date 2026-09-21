@@ -132,7 +132,7 @@ def main():
     parser.add_argument("--url", default=DEFAULT_API_URL, help="API completions endpoint URL")
     parser.add_argument("--health-url", default=None, help="Server health endpoint URL")
     parser.add_argument("--model", default="qwen3.8-27b-exl3-3.0bpw", help="Model ID")
-    parser.add_argument("--parallel", "-p", type=int, default=4, help="Number of concurrent clients (default: 4)")
+    parser.add_argument("--parallel", "-p", "--concurrency", "-c", type=int, default=4, help="Number of concurrent clients (default: 4)")
     parser.add_argument("--tokens", "-t", type=int, default=128, help="Max generation tokens per client (default: 128)")
     parser.add_argument("--temperature", type=float, default=0.7, help="Sampling temperature (default: 0.7)")
     parser.add_argument("--api-key", default=os.getenv("OPENAI_API_KEY", ""), help="API key")

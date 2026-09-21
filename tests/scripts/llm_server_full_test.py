@@ -1133,7 +1133,7 @@ def parse_selected_tests(test_arg: str):
 
 def main():
     parser = argparse.ArgumentParser(description="Enterprise LLM Server Full Benchmark & Evaluation Suite")
-    parser.add_argument("--endpoint", "-e", help="LLM server base endpoint (e.g. http://172.16.16.29:8000/v1)")
+    parser.add_argument("--endpoint", "-e", help="LLM server base endpoint (e.g. http://127.0.0.1:8888/v1)")
     parser.add_argument("--api-key", "-k", default=os.getenv("OPENAI_API_KEY", ""), help="API key (optional)")
     parser.add_argument("--model", "-m", help="Model name or ID to test")
     parser.add_argument("--parallel", "-p", type=int, help="Number of parallel clients to test")

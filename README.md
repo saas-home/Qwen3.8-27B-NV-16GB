@@ -190,10 +190,9 @@ The server exposes a standard **OpenAI-compatible endpoint**:
 
 ### 🤖 Pi Agent Configuration (`~/.pi/agent/models.json`)
 
-To use this 204.8k context server with [Pi Agent](https://github.com/badlogic/pi-mono), add the following configuration to `~/.pi/agent/models.json`:
+To use this server with [Pi Agent](https://github.com/badlogic/pi-mono), add the following configuration to `~/.pi/agent/models.json`:
 
 ```json
-
 {
   "providers": {
     "local-openai": {
@@ -204,7 +203,7 @@ To use this 204.8k context server with [Pi Agent](https://github.com/badlogic/pi
         {
           "id": "qwen3.8-27b",
           "name": "qwen3.8-27b",
-          "contextWindow": 262144,
+          "contextWindow": 200000,
           "maxTokens": 16384
         }
       ]
@@ -214,7 +213,9 @@ To use this 204.8k context server with [Pi Agent](https://github.com/badlogic/pi
 ```
 
 > [!IMPORTANT]
-> Always set `"contextWindow": 204800` in `models.json`. If omitted, Pi Agent defaults to 8,192 tokens, artificially truncating your 204.8k context window. Setting `"supportsDeveloperRole": false` prevents `developer` role errors on local OpenAI endpoints.
+> - **`contextWindow: 200000` (200k)**: Sets a clean, safe horizon below the physical 204.8k VRAM ceiling (`204,800`), reserving headroom for output generation. If omitted, Pi Agent defaults to 8,192 tokens, artificially truncating your context. (You can also set `194560` for a 95% threshold or `204800` for the absolute maximum).
+> - **`maxTokens: 16384`**: Aligns with the server's `MAX_TOKENS=16384` generation ceiling, preventing mid-thought cutoffs during deep reasoning or large file refactoring.
+> - **`baseUrl`**: Replace `172.16.16.43:8888` with your server's host IP (or `127.0.0.1:8888` if running locally).
 
 ### 💻 Claude Code / Cline / Cursor / Aider / Roo Code
 

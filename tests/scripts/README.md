@@ -35,12 +35,12 @@ python3 tests/scripts/llm_server_full_test.py
 # Non-interactive automated execution against local server
 python3 tests/scripts/llm_server_full_test.py --auto
 
-# Target remote endpoint with specific model and 4 parallel clients
+# Target specific endpoint with model and 4 parallel clients
 python3 tests/scripts/llm_server_full_test.py \
-  --endpoint http://172.16.16.29:8000/v1 \
-  --model "Qwen3.8 Flash Next" \
-  --parallel 4 \
-  --out tests/results/remote_eval.json
+  --endpoint http://127.0.0.1:8888/v1 \
+  --model "qwen3.8-27b" \
+  --parallel 2 \
+  --out tests/results/eval_report.json
 ```
 
 ---
@@ -50,11 +50,11 @@ High-concurrency batching and throughput stress test. Measures aggregate generat
 
 ### Usage:
 ```bash
-# Test with 4 concurrent clients
-python3 tests/scripts/test_concurrency.py --parallel 4
+# Test with 2 concurrent clients (ExLlamaV3 continuous batching)
+python3 tests/scripts/test_concurrency.py --parallel 2
 
-# Test with 8 concurrent clients against a remote endpoint
-python3 tests/scripts/test_concurrency.py --url http://172.16.16.29:8000/v1/chat/completions --model "Qwen3.8 Flash Next" -p 8
+# Test with 4 concurrent clients against custom endpoint
+python3 tests/scripts/test_concurrency.py --url http://127.0.0.1:8888/v1/chat/completions --model "qwen3.8-27b" -p 4
 ```
 
 ---
