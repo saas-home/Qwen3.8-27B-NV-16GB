@@ -127,13 +127,17 @@ BENCHMARK_TASKS = [
 ]
 
 
-def run_benchmark(base_url: str, output_file: str):
-    print(f"=== Starting Benchmark Suite against {base_url} ===")
+def run_benchmark(base_url: str, output_file: str, model: str = "qwen3.8-27b-exl3-3.0bpw", api_key: str = ""):
+    print(f"=== Starting Benchmark Suite against {base_url} (Model: {model}) ===")
     results = []
+
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     # Check models endpoint
     try:
-        req = urllib.request.Request(f"{base_url}/models")
+        req = urllib.request.Request(f"{base_url}/models", headers=headers)
         with urllib.request.urlopen(req, timeout=10) as resp:
             models_data = json.loads(resp.read().decode())
             print(f"Connected to endpoint. Models: {json.dumps(models_data)}")
@@ -143,6 +147,7 @@ def run_benchmark(base_url: str, output_file: str):
     for idx, task in enumerate(BENCHMARK_TASKS, 1):
         print(f"\n[{idx}/{len(BENCHMARK_TASKS)}] Running {task['id']} ({task['name']})...")
         payload = {
+            "model": model,
             "messages": [
                 {"role": "system", "content": task["system"]},
                 {"role": "user", "content": task["prompt"]},
@@ -150,24 +155,26 @@ def run_benchmark(base_url: str, output_file: str):
             "max_tokens": task["max_tokens"],
             "temperature": task["temperature"],
             "stream": True,
+            "stream_options": {"include_usage": True}
         }
 
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             f"{base_url}/chat/completions",
             data=data,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
         )
 
         t_start = time.perf_counter()
         t_first_token = None
         output_chunks = []
         token_count = 0
+        completion_tokens = 0
 
         try:
             with urllib.request.urlopen(req, timeout=300) as response:
                 for line in response:
-                    line = line.decode("utf-8").strip()
+                    line = line.decode("utf-8", errors="replace").strip()
                     if not line or not line.startswith("data: "):
                         continue
                     data_str = line[6:]
@@ -175,25 +182,43 @@ def run_benchmark(base_url: str, output_file: str):
                         break
                     try:
                         chunk = json.loads(data_str)
-                        if t_first_token is None:
-                            t_first_token = time.perf_counter()
-                        delta = chunk["choices"][0].get("delta", {})
-                        text_piece = delta.get("content") or delta.get("reasoning_content") or ""
-                        if text_piece:
-                            output_chunks.append(text_piece)
-                            token_count += 1
                     except Exception:
                         continue
+
+                    if "error" in chunk:
+                        print(f"\n[ERROR from server]: {chunk['error']}", flush=True)
+                        break
+
+                    if "usage" in chunk and chunk["usage"]:
+                        completion_tokens = chunk["usage"].get("completion_tokens", completion_tokens)
+
+                    choices = chunk.get("choices") or []
+                    if not choices:
+                        continue
+
+                    if choices[0].get("finish_reason") == "error":
+                        err_msg = choices[0].get("message", {}).get("content", "Server error during generation")
+                        print(f"\n[ERROR from model]: {err_msg}", flush=True)
+                        break
+
+                    delta = choices[0].get("delta", {})
+                    text_piece = delta.get("content") or delta.get("reasoning_content") or ""
+                    if text_piece:
+                        if t_first_token is None:
+                            t_first_token = time.perf_counter()
+                        output_chunks.append(text_piece)
+                        token_count += 1
 
             t_end = time.perf_counter()
             total_time = t_end - t_start
             ttft = (t_first_token - t_start) if t_first_token else total_time
             gen_time = (t_end - t_first_token) if t_first_token else total_time
-            tok_s = (token_count / gen_time) if gen_time > 0 else 0.0
+            final_tokens = completion_tokens if completion_tokens > 0 else token_count
+            tok_s = ((final_tokens - 1) / gen_time) if gen_time > 0 and final_tokens > 1 else (final_tokens / gen_time if gen_time > 0 else 0.0)
 
             full_output = "".join(output_chunks)
 
-            print(f"  -> Generated {token_count} tokens in {total_time:.2f}s")
+            print(f"  -> Generated {final_tokens} tokens in {total_time:.2f}s")
             print(f"  -> TTFT (prefill latency): {ttft*1000:.1f} ms")
             print(f"  -> Decode Speed: {tok_s:.2f} tok/s")
 
@@ -201,7 +226,7 @@ def run_benchmark(base_url: str, output_file: str):
                 "task_id": task["id"],
                 "name": task["name"],
                 "category": task["category"],
-                "tokens": token_count,
+                "tokens": final_tokens,
                 "total_time_s": round(total_time, 3),
                 "ttft_ms": round(ttft * 1000, 1),
                 "tok_per_sec": round(tok_s, 2),
@@ -233,10 +258,14 @@ def run_benchmark(base_url: str, output_file: str):
     avg_speed = sum(r.get("tok_per_sec", 0) for r in results if "tok_per_sec" in r) / max(1, len([r for r in results if "tok_per_sec" in r]))
     summary = {
         "base_url": base_url,
+        "model": model,
         "avg_decode_tok_s": round(avg_speed, 2),
         "results": results,
     }
 
+    out_dir = os.path.dirname(output_file)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
     with open(output_file, "w") as f:
         json.dump(summary, f, indent=2)
     print(f"\n=== Benchmark completed! Saved to {output_file} (Avg: {avg_speed:.2f} tok/s) ===")
@@ -246,7 +275,9 @@ def run_benchmark(base_url: str, output_file: str):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run comparison benchmark against OpenAI-compatible endpoint.")
     parser.add_argument("--url", default="http://127.0.0.1:8888/v1", help="Base API URL (e.g. http://127.0.0.1:8888/v1)")
+    parser.add_argument("--model", default="qwen3.8-27b-exl3-3.0bpw", help="Model name or ID")
+    parser.add_argument("--api-key", default=os.getenv("OPENAI_API_KEY", ""), help="API key")
     parser.add_argument("--out", default="bench_results.json", help="Output JSON results path")
     args = parser.parse_args()
 
-    run_benchmark(args.url, args.out)
+    run_benchmark(args.url, args.out, model=args.model, api_key=args.api_key)

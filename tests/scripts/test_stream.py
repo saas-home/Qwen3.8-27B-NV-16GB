@@ -11,11 +11,13 @@ Tests:
 import json
 import time
 import urllib.request
+import urllib.error
 import argparse
+import os
 
 DEFAULT_API_URL = "http://127.0.0.1:8888/v1/chat/completions"
 
-def run_test(api_url, prompt_text, max_tokens=64, model="qwen3.8-27b-exl3-3.0bpw"):
+def run_test(api_url, prompt_text, max_tokens=64, model="qwen3.8-27b-exl3-3.0bpw", api_key=""):
     payload = {
         "model": model,
         "messages": [
@@ -28,7 +30,10 @@ def run_test(api_url, prompt_text, max_tokens=64, model="qwen3.8-27b-exl3-3.0bpw
     }
     
     data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(api_url, data=data, headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    req = urllib.request.Request(api_url, data=data, headers=headers)
     
     t0 = time.perf_counter()
     t_first = None
@@ -38,25 +43,37 @@ def run_test(api_url, prompt_text, max_tokens=64, model="qwen3.8-27b-exl3-3.0bpw
     completion_tokens = 0
     text_accum = []
     
-    with urllib.request.urlopen(req, timeout=300) as response:
-        for line in response:
-            line = line.decode("utf-8").strip()
-            if not line.startswith("data:"):
-                continue
-            line_data = line[5:].strip()
-            if line_data == "[DONE]":
-                break
-            try:
-                chunk = json.loads(line_data)
-            except Exception:
-                continue
-            
-            if "usage" in chunk and chunk["usage"]:
-                prompt_tokens = chunk["usage"].get("prompt_tokens", 0)
-                completion_tokens = chunk["usage"].get("completion_tokens", 0)
-            
-            choices = chunk.get("choices") or []
-            if choices:
+    try:
+        with urllib.request.urlopen(req, timeout=300) as response:
+            for line in response:
+                line = line.decode("utf-8", errors="replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                line_data = line[5:].strip()
+                if line_data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(line_data)
+                except Exception:
+                    continue
+                
+                if "error" in chunk:
+                    print(f"\n[ERROR from server]: {chunk['error']}", flush=True)
+                    break
+
+                if "usage" in chunk and chunk["usage"]:
+                    prompt_tokens = chunk["usage"].get("prompt_tokens", 0)
+                    completion_tokens = chunk["usage"].get("completion_tokens", 0)
+                
+                choices = chunk.get("choices") or []
+                if not choices:
+                    continue
+
+                if choices[0].get("finish_reason") == "error":
+                    err_msg = choices[0].get("message", {}).get("content", "Server error during generation")
+                    print(f"\n[ERROR from model]: {err_msg}", flush=True)
+                    break
+
                 delta = choices[0].get("delta", {})
                 content = delta.get("content") or delta.get("reasoning_content")
                 if content:
@@ -67,6 +84,13 @@ def run_test(api_url, prompt_text, max_tokens=64, model="qwen3.8-27b-exl3-3.0bpw
                     chunks_count += 1
                     text_accum.append(content)
                     print(content, end="", flush=True)
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode("utf-8", errors="replace")
+        print(f"\nHTTP Error {e.code}: {e.reason} - {err_body}")
+        return None
+    except Exception as e:
+        print(f"\nRequest failed: {e}")
+        return None
 
     print()
     if t_last is None:
@@ -76,13 +100,14 @@ def run_test(api_url, prompt_text, max_tokens=64, model="qwen3.8-27b-exl3-3.0bpw
 
     ttft = t_first - t0
     decode_time = t_last - t_first
+    final_tokens = completion_tokens if completion_tokens > 0 else chunks_count
     
     prefill_speed = prompt_tokens / ttft if ttft > 0 else 0
-    decode_speed = (completion_tokens - 1) / decode_time if decode_time > 0 and completion_tokens > 1 else 0
+    decode_speed = (final_tokens - 1) / decode_time if decode_time > 0 and final_tokens > 1 else 0
     
     return {
         "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
+        "completion_tokens": final_tokens,
         "ttft_s": ttft,
         "prefill_tok_s": prefill_speed,
         "decode_time_s": decode_time,
@@ -96,13 +121,15 @@ if __name__ == "__main__":
     parser.add_argument("--prompt", default="Why is the sky blue? Answer in 2 sentences.", help="Prompt text")
     parser.add_argument("--tokens", type=int, default=128, help="Max tokens to generate")
     parser.add_argument("--model", default="qwen3.8-27b-exl3-3.0bpw", help="Model ID")
+    parser.add_argument("--api-key", default=os.getenv("OPENAI_API_KEY", ""), help="API key")
     args = parser.parse_args()
 
     print(f"Connecting to {args.url} (Model: {args.model})...")
-    res = run_test(args.url, args.prompt, max_tokens=args.tokens, model=args.model)
-    print("\n--- Summary ---")
-    print(f"Prompt Tokens: {res['prompt_tokens']}")
-    print(f"Gen Tokens   : {res['completion_tokens']}")
-    print(f"TTFT         : {res['ttft_s']*1000:.1f} ms")
-    print(f"Prefill Speed: {res['prefill_tok_s']:.1f} tok/s")
-    print(f"Decode Speed : {res['decode_tok_s']:.1f} tok/s")
+    res = run_test(args.url, args.prompt, max_tokens=args.tokens, model=args.model, api_key=args.api_key)
+    if res:
+        print("\n--- Summary ---")
+        print(f"Prompt Tokens: {res['prompt_tokens']}")
+        print(f"Gen Tokens   : {res['completion_tokens']}")
+        print(f"TTFT         : {res['ttft_s']*1000:.1f} ms")
+        print(f"Prefill Speed: {res['prefill_tok_s']:.1f} tok/s")
+        print(f"Decode Speed : {res['decode_tok_s']:.1f} tok/s")

@@ -15,29 +15,55 @@ import time
 import json
 import re
 import urllib.request
+import urllib.error
 import argparse
 
 DEFAULT_API_URL = "http://127.0.0.1:8888/v1/chat/completions"
 
-def call_model(url, messages, max_tokens=1500, temperature=0.0, enable_thinking=False, timeout=600):
+def call_model(url, messages, max_tokens=1500, temperature=0.0, enable_thinking=False, timeout=600, model="qwen3.8-27b-exl3-3.0bpw", api_key=""):
     payload = {
-        "model": "qwen3.8-27b-exl3-3.0bpw",
+        "model": model,
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
         "stream": False,
-        "chat_template_kwargs": {"enable_thinking": enable_thinking}
     }
+    if enable_thinking:
+        payload["chat_template_kwargs"] = {"enable_thinking": True}
+
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
     req_data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=req_data, headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(url, data=req_data, headers=headers)
     
     t0 = time.perf_counter()
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if "chat_template_kwargs" in payload:
+            payload.pop("chat_template_kwargs", None)
+            req_retry = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)
+            try:
+                with urllib.request.urlopen(req_retry, timeout=timeout) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+            except Exception as e2:
+                print(f"HTTP error during model call: {e2}")
+                return {"content": "", "reasoning": "", "text": "", "prompt_tokens": 0, "completion_tokens": 0, "total_time_s": 0.0, "tok_per_sec": 0.0, "error": str(e2)}
+        else:
+            print(f"HTTP error during model call: {e}")
+            return {"content": "", "reasoning": "", "text": "", "prompt_tokens": 0, "completion_tokens": 0, "total_time_s": 0.0, "tok_per_sec": 0.0, "error": str(e)}
+    except Exception as e:
+        print(f"Request error during model call: {e}")
+        return {"content": "", "reasoning": "", "text": "", "prompt_tokens": 0, "completion_tokens": 0, "total_time_s": 0.0, "tok_per_sec": 0.0, "error": str(e)}
+
     tt = time.perf_counter() - t0
     
-    choice = data["choices"][0]
-    msg = choice["message"]
+    choices = data.get("choices") or [{}]
+    choice = choices[0]
+    msg = choice.get("message", {})
     content = msg.get("content") or ""
     reasoning = msg.get("reasoning_content") or ""
     usage = data.get("usage") or {}
@@ -48,7 +74,7 @@ def call_model(url, messages, max_tokens=1500, temperature=0.0, enable_thinking=
     return {
         "content": content,
         "reasoning": reasoning,
-        "text": content if content.strip() else reasoning,
+        "text": (reasoning + "\n" + content) if reasoning.strip() else content,
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_time_s": tt,
@@ -65,7 +91,7 @@ FILLER_BLOCK = (
     "Memory cgroups enforce hierarchical resource isolation, throttling writeback bandwidth when limits are exceeded. "
 ) # ~100 tokens
 
-def test_high_entropy_kv_recall(url):
+def test_high_entropy_kv_recall(url, model="qwen3.8-27b-exl3-3.0bpw", api_key=""):
     print("\n" + "="*80)
     print("STRESS TEST 1: High-Entropy Associative Key-Value Recall (10 Targets in 50k Tokens)")
     print("="*80)
@@ -130,7 +156,7 @@ def test_high_entropy_kv_recall(url):
     )
     
     print(f"  Ingesting ~50,000 tokens with 25 associative high-entropy key-value pairs...")
-    res = call_model(url, [{"role": "user", "content": prompt}], max_tokens=1000, temperature=0.0)
+    res = call_model(url, [{"role": "user", "content": prompt}], max_tokens=1000, temperature=0.0, model=model, api_key=api_key)
     print(f"  Generated {res['completion_tokens']} tokens in {res['total_time_s']:.2f}s ({res['tok_per_sec']:.1f} tok/s)")
     
     out = res["content"]
@@ -148,20 +174,10 @@ def test_high_entropy_kv_recall(url):
     print(f"  [Result]: {passed_keys}/{len(targets)} exact high-entropy matches. {'PASS' if success else 'FAIL'}")
     return {"name": "High-Entropy KV Recall (8/8)", "passed": success, "score": f"{passed_keys}/{len(targets)}"}
 
-def test_multi_hop_variable_tracking(url):
+def test_multi_hop_variable_tracking(url, model="qwen3.8-27b-exl3-3.0bpw", api_key=""):
     print("\n" + "="*80)
     print("STRESS TEST 2: Multi-Hop Variable Tracking across 8 Dependency Stages in 50k Tokens")
     print("="*80)
-    
-    # 8 sequential variable hops
-    # var_a = 7412
-    # var_b = var_a + 1928  -> 9340
-    # var_c = var_b * 3 - 500 -> 27520
-    # var_d = var_c ^ 1023  -> 27520 ^ 1023 = 26559
-    # var_e = var_d + 12400 -> 38959
-    # var_f = var_e - 3959  -> 35000
-    # var_g = var_f * 2 + 77 -> 70077
-    # var_h = var_g ^ 4095  -> 70077 ^ 4095 = 73930
     
     stages = [
         (50, "REGISTRATION: var_a = 7412"),
@@ -203,7 +219,7 @@ def test_multi_hop_variable_tracking(url):
     )
     
     print(f"  Ingesting ~50,000 tokens with 8 sequential multi-hop dependencies...")
-    res = call_model(url, [{"role": "user", "content": prompt}], max_tokens=1500, temperature=0.0, enable_thinking=True)
+    res = call_model(url, [{"role": "user", "content": prompt}], max_tokens=1500, temperature=0.0, enable_thinking=True, model=model, api_key=api_key)
     print(f"  Generated {res['completion_tokens']} tokens in {res['total_time_s']:.2f}s ({res['tok_per_sec']:.1f} tok/s)")
     
     text = res["text"]
@@ -214,23 +230,28 @@ def test_multi_hop_variable_tracking(url):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--url", default=DEFAULT_API_URL)
-    parser.add_argument("--out", default="tests/results/stress_test_results.json")
+    parser.add_argument("--url", default=DEFAULT_API_URL, help="API completion endpoint")
+    parser.add_argument("--model", default="qwen3.8-27b-exl3-3.0bpw", help="Model name or ID")
+    parser.add_argument("--api-key", default=os.getenv("OPENAI_API_KEY", ""), help="API key")
+    parser.add_argument("--out", default="tests/results/stress_test_results.json", help="Path to output JSON")
     args = parser.parse_args()
     
     results = []
-    results.append(test_high_entropy_kv_recall(args.url))
-    results.append(test_multi_hop_variable_tracking(args.url))
+    results.append(test_high_entropy_kv_recall(args.url, model=args.model, api_key=args.api_key))
+    results.append(test_multi_hop_variable_tracking(args.url, model=args.model, api_key=args.api_key))
     
     print("\n" + "="*80)
     print("STRESS TEST SUMMARY")
     print("="*80)
     for r in results:
         status = "PASSED" if r["passed"] else "FAILED"
-        print(f" - {r['name']:<45} : {status}")
         
+    out_dir = os.path.dirname(args.out)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
+    print(f"\nSaved results to {args.out}")
 
 if __name__ == "__main__":
     main()

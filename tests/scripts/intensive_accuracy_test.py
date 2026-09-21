@@ -22,7 +22,7 @@ import argparse
 
 DEFAULT_API_URL = "http://127.0.0.1:8888/v1/chat/completions"
 
-def call_model(url, messages, max_tokens=2048, temperature=0.1, model="qwen3.8-27b-exl3-3.0bpw", timeout=600, enable_thinking=None):
+def call_model(url, messages, max_tokens=2048, temperature=0.1, model="qwen3.8-27b-exl3-3.0bpw", timeout=600, enable_thinking=None, api_key=""):
     payload = {
         "model": model,
         "messages": messages,
@@ -34,7 +34,10 @@ def call_model(url, messages, max_tokens=2048, temperature=0.1, model="qwen3.8-2
     if enable_thinking is not None:
         payload["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
     req_data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=req_data, headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    req = urllib.request.Request(url, data=req_data, headers=headers)
     
     t0 = time.perf_counter()
     t_first = None
@@ -44,43 +47,58 @@ def call_model(url, messages, max_tokens=2048, temperature=0.1, model="qwen3.8-2
     prompt_tokens = 0
     completion_tokens = 0
     
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        for line in resp:
-            line = line.decode("utf-8", errors="replace").strip()
-            if not line.startswith("data:"):
-                continue
-            data_str = line[5:].strip()
-            if data_str == "[DONE]":
-                break
-            try:
-                chunk = json.loads(data_str)
-            except Exception:
-                continue
-            
-            if "usage" in chunk and chunk["usage"]:
-                prompt_tokens = chunk["usage"].get("prompt_tokens", 0)
-                completion_tokens = chunk["usage"].get("completion_tokens", 0)
-            
-            choices = chunk.get("choices") or []
-            if choices:
-                delta = choices[0].get("delta", {})
-                c = delta.get("content")
-                r = delta.get("reasoning_content")
-                if c or r:
-                    now = time.perf_counter()
-                    if t_first is None:
-                        t_first = now
-                    t_last = now
-                if c:
-                    content_chunks.append(c)
-                if r:
-                    reasoning_chunks.append(r)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            for line in resp:
+                line = line.decode("utf-8", errors="replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                data_str = line[5:].strip()
+                if data_str == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data_str)
+                except Exception:
+                    continue
+                
+                if "error" in chunk:
+                    print(f"\n[ERROR from server]: {chunk['error']}", flush=True)
+                    break
+
+                if "usage" in chunk and chunk["usage"]:
+                    prompt_tokens = chunk["usage"].get("prompt_tokens", prompt_tokens)
+                    completion_tokens = chunk["usage"].get("completion_tokens", completion_tokens)
+                
+                choices = chunk.get("choices") or []
+                if choices:
+                    if choices[0].get("finish_reason") == "error":
+                        err_msg = choices[0].get("message", {}).get("content", "Server error during generation")
+                        print(f"\n[ERROR from model]: {err_msg}", flush=True)
+                        break
+
+                    delta = choices[0].get("delta", {})
+                    c = delta.get("content")
+                    r = delta.get("reasoning_content")
+                    if c or r:
+                        now = time.perf_counter()
+                        if t_first is None:
+                            t_first = now
+                        t_last = now
+                    if c:
+                        content_chunks.append(c)
+                    if r:
+                        reasoning_chunks.append(r)
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode("utf-8", errors="replace")
+        print(f"\nHTTP Error {e.code}: {e.reason} - {err_body}")
+    except Exception as e:
+        print(f"\nRequest failed: {e}")
                     
     total_time = time.perf_counter() - t0
     ttft = (t_first - t0) if t_first else total_time
     answer_text = "".join(content_chunks)
     reasoning_text = "".join(reasoning_chunks)
-    full_text = answer_text if answer_text.strip() else (reasoning_text + answer_text)
+    full_text = f"{reasoning_text}\n{answer_text}" if reasoning_text.strip() else answer_text
     
     if completion_tokens == 0:
         completion_tokens = (len(answer_text) + len(reasoning_text)) // 4
@@ -123,7 +141,7 @@ def extract_json_block(text):
         return m.group(1).strip()
     return text.strip()
 
-def test_executable_code(url):
+def test_executable_code(url, model="qwen3.8-27b-exl3-3.0bpw", api_key=""):
     print("\n" + "="*80)
     print("TEST 1: Executable Algorithmic Code Generation (LRU Cache with Doubly Linked List)")
     print("="*80)
@@ -134,7 +152,7 @@ def test_executable_code(url):
         "2. Methods: `__init__(capacity: int)`, `get(key: int) -> int` (returns -1 if absent), `put(key: int, value: int) -> None`, `peek(key: int) -> int` (returns value without updating LRU order).\n"
         "3. Provide clean, fully typed, self-contained Python code."
     )
-    res = call_model(url, [{"role": "user", "content": prompt}], max_tokens=2048, temperature=0.0, enable_thinking=False)
+    res = call_model(url, [{"role": "user", "content": prompt}], max_tokens=2048, temperature=0.0, enable_thinking=False, model=model, api_key=api_key)
     print(f"  [Model Response]: Generated {res['completion_tokens']} tokens in {res['total_time_s']:.2f}s ({res['tok_per_sec']:.1f} tok/s, TTFT: {res['ttft_ms']:.1f} ms)")
     
     code_source = res["content"] if res["content"].strip() else res["text"]
@@ -215,7 +233,7 @@ print("ALL_UNIT_TESTS_PASSED")
         "tok_per_sec": res["tok_per_sec"]
     }
 
-def test_multi_needle_in_haystack(url):
+def test_multi_needle_in_haystack(url, model="qwen3.8-27b-exl3-3.0bpw", api_key=""):
     print("\n" + "="*80)
     print("TEST 2: Multi-Needle in a ~60,000-Token Haystack (NIAH)")
     print("="*80)
@@ -260,7 +278,7 @@ def test_multi_needle_in_haystack(url):
     )
     
     print(f"  Ingesting ~60,000-token prompt with 5 buried needles...")
-    res = call_model(url, [{"role": "user", "content": prompt}], max_tokens=512, temperature=0.0, timeout=600)
+    res = call_model(url, [{"role": "user", "content": prompt}], max_tokens=512, temperature=0.0, timeout=600, model=model, api_key=api_key)
     print(f"  [Model Response]: TTFT: {res['ttft_ms']:.1f} ms | Decode Speed: {res['tok_per_sec']:.1f} tok/s")
     
     output = res["content"] if res["content"].strip() else res["text"]
@@ -293,7 +311,7 @@ def test_multi_needle_in_haystack(url):
         "prompt_tokens": res["prompt_tokens"]
     }
 
-def test_mathematical_reasoning(url):
+def test_mathematical_reasoning(url, model="qwen3.8-27b-exl3-3.0bpw", api_key=""):
     print("\n" + "="*80)
     print("TEST 3: Multi-Step Mathematical & Combinatorial Reasoning")
     print("="*80)
@@ -311,7 +329,7 @@ def test_mathematical_reasoning(url):
         "4. Calculate P(A | B) = P(A and B) / P(B).\n"
         "5. State the final probability as an exact irreducible fraction in the form P/Q."
     )
-    res = call_model(url, [{"role": "user", "content": prompt}], max_tokens=2500, temperature=0.0)
+    res = call_model(url, [{"role": "user", "content": prompt}], max_tokens=2500, temperature=0.0, model=model, api_key=api_key)
     print(f"  [Model Response]: Generated {res['completion_tokens']} tokens in {res['total_time_s']:.2f}s ({res['tok_per_sec']:.1f} tok/s, TTFT: {res['ttft_ms']:.1f} ms)")
     
     # Ground truth calculation:
@@ -345,7 +363,7 @@ def test_mathematical_reasoning(url):
         "tok_per_sec": res["tok_per_sec"]
     }
 
-def test_concurrency_formal_proof(url):
+def test_concurrency_formal_proof(url, model="qwen3.8-27b-exl3-3.0bpw", api_key=""):
     print("\n" + "="*80)
     print("TEST 4: Formal Concurrency & Deadlock Graph Cycle Analysis")
     print("="*80)
@@ -361,7 +379,7 @@ def test_concurrency_formal_proof(url):
         "3. Specify the exact interleaving execution trace that induces deadlock.\n"
         "4. Provide the standardized lock-ordering hierarchy rule that guarantees deadlock-free execution."
     )
-    res = call_model(url, [{"role": "user", "content": prompt}], max_tokens=1500, temperature=0.0)
+    res = call_model(url, [{"role": "user", "content": prompt}], max_tokens=1500, temperature=0.0, model=model, api_key=api_key)
     print(f"  [Model Response]: Generated {res['completion_tokens']} tokens in {res['total_time_s']:.2f}s ({res['tok_per_sec']:.1f} tok/s, TTFT: {res['ttft_ms']:.1f} ms)")
     
     text = res["text"].lower()
@@ -385,7 +403,7 @@ def test_concurrency_formal_proof(url):
         "tok_per_sec": res["tok_per_sec"]
     }
 
-def test_strict_schema_validation(url):
+def test_strict_schema_validation(url, model="qwen3.8-27b-exl3-3.0bpw", api_key=""):
     print("\n" + "="*80)
     print("TEST 5: Strict JSON Schema Validation & Complex Constraint Adherence")
     print("="*80)
@@ -402,7 +420,7 @@ def test_strict_schema_validation(url):
         "   - 'load_avg': float between 0.0 and 1.0\n"
         "3. All 3 nodes must have distinct node_id and distinct regions."
     )
-    res = call_model(url, [{"role": "user", "content": prompt}], max_tokens=1000, temperature=0.0)
+    res = call_model(url, [{"role": "user", "content": prompt}], max_tokens=1000, temperature=0.0, model=model, api_key=api_key)
     print(f"  [Model Response]: Generated {res['completion_tokens']} tokens in {res['total_time_s']:.2f}s ({res['tok_per_sec']:.1f} tok/s, TTFT: {res['ttft_ms']:.1f} ms)")
     
     raw_text = res["content"] if res["content"].strip() else res["text"]
@@ -448,20 +466,23 @@ def test_strict_schema_validation(url):
 def main():
     parser = argparse.ArgumentParser(description="Intensive Accuracy and Precision Benchmark.")
     parser.add_argument("--url", default=DEFAULT_API_URL, help="Endpoint URL")
+    parser.add_argument("--model", default="qwen3.8-27b-exl3-3.0bpw", help="Model name or ID")
+    parser.add_argument("--api-key", default=os.getenv("OPENAI_API_KEY", ""), help="API key")
     parser.add_argument("--out", default="tests/results/exl3_intensive_accuracy_results.json", help="Output JSON results")
     args = parser.parse_args()
     
     print("=" * 80)
     print("STARTING INTENSIVE ACCURACY & PRECISION BENCHMARK SUITE")
     print(f"Target Endpoint: {args.url}")
+    print(f"Model ID       : {args.model}")
     print("=" * 80)
     
     results = []
-    results.append(test_executable_code(args.url))
-    results.append(test_multi_needle_in_haystack(args.url))
-    results.append(test_mathematical_reasoning(args.url))
-    results.append(test_concurrency_formal_proof(args.url))
-    results.append(test_strict_schema_validation(args.url))
+    results.append(test_executable_code(args.url, model=args.model, api_key=args.api_key))
+    results.append(test_multi_needle_in_haystack(args.url, model=args.model, api_key=args.api_key))
+    results.append(test_mathematical_reasoning(args.url, model=args.model, api_key=args.api_key))
+    results.append(test_concurrency_formal_proof(args.url, model=args.model, api_key=args.api_key))
+    results.append(test_strict_schema_validation(args.url, model=args.model, api_key=args.api_key))
     
     print("\n" + "=" * 80)
     print("INTENSIVE ACCURACY BENCHMARK SUMMARY")
@@ -476,11 +497,14 @@ def main():
             
     summary_data = {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "model": args.model,
         "all_passed": all_passed,
         "results": results
     }
     
-    os.makedirs(os.path.dirname(args.out), exist_ok=True)
+    out_dir = os.path.dirname(args.out)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(summary_data, f, indent=2)
         
