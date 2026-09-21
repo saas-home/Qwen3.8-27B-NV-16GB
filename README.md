@@ -15,6 +15,7 @@
 > - **AMD Ryzen 9 7950X3D CPU Affinity:** Pins worker execution to CCD0 3D V-Cache (`AFFINITY=0-7,16-23`), eliminating cross-CCD latency penalties.
 > - **Extended Generation Ceiling & Reasoning Hygiene:** Eliminates Coding Agent socket dropouts (`MAX_TOKENS=16384`) and sanitizes historical `<think>` tags (`NO_REASONING_PRESERVE=1`).
 > - **Dynamic Engine Resolution:** Supports ExLlamaV3 v1.5.0+ through dynamic semver resolution.
+> - **14-Stage Enterprise Qualification Suite (`tests/scripts/`):** Unified test harness (`llm_server_full_test.py`) certifying latency, multimodal vision, continuous batching, tool calling, structured JSON schema, prefix caching, socket abort recovery, precision financial ledger reconciliation, dynamic code unit testing, and context scaling up to the full 204.8k ceiling with zero OOM.
 > - **Detailed Technical Whitepaper & Benchmarks:** Comprehensive empirical evaluation, latency curves, and head-to-head comparison against llama.cpp are documented in [Qwen3.8-27B-NV-16GB-Optimization-Whitepaper.md](Qwen3.8-27B-NV-16GB-Optimization-Whitepaper.md).
 >
 > ### 🚀 Multi-Client Continuous Batching Benchmark (`PARALLEL=2`)
@@ -437,6 +438,62 @@ In live real-world tests connecting two autonomous coding agents simultaneously:
 * **Deep Context Stability**: Sustained **58,258 tokens (Agent 1) + 61,602 tokens (Agent 2)**—a combined **119,860 tokens actively resident in VRAM**—with over 84,940 tokens of remaining free safety headroom under the 204,800 limit.
 * **Massive Token Throughput**: Processed over **3,000,000+ prompt tokens** and generated **87,000+ completion tokens** across dozens of rapid conversational turns without a single dropped connection, OOM, or memory leak.
 * **Cooperative Memory Bandwidth**: Because decoding is memory-bandwidth bound, reading the 27B model weights once from GDDR6X to compute tokens for *both* agents simultaneously maximized GPU utilization (**98% GPU compute load, 284W TDP**) and yielded faster collective project completion.
+
+---
+
+## Enterprise Production Evaluation & Benchmark Suite
+
+This repository includes a comprehensive, automated 14-stage enterprise production evaluation and benchmarking harness located in [`tests/scripts/`](tests/scripts):
+
+```bash
+# Run the complete 14-stage qualification suite non-interactively
+python3 tests/scripts/llm_server_full_test.py --endpoint http://127.0.0.1:8888/v1 --auto
+
+# Run specific tests (e.g. only Test 14 Context Scaling)
+python3 tests/scripts/llm_server_full_test.py --test 14
+
+# Run specific tests by name (e.g. precision ledger and dynamic code unit testing)
+python3 tests/scripts/llm_server_full_test.py --test precision,code
+
+# Run with custom context milestones (e.g. test 200k and 204k directly)
+python3 tests/scripts/llm_server_full_test.py --test 14 --milestones 200000 203800
+```
+
+### Empirical 14-Stage Capability Scorecard
+
+Empirically verified on an **NVIDIA GeForce RTX 4070 Ti SUPER (16 GB)** running **`Qwen3.8-27B-EXL3-3.0bpw`** (`CACHE_QUANT=4,3` @ 204.8k context):
+
+| Evaluation Domain | Status | Key Metric / Latency | Throughput |
+| :--- | :---: | :--- | :--- |
+| **1. Streaming & Latency** | **PASS** | TTFT: `180.6 ms` | `44.77 tok/s` |
+| **2. Multimodal Vision (Invoice)** | **PASS** | TTFT: `1064.7 ms` (Invoice & total detected) | `43.32 tok/s` |
+| **3. Parallel Concurrency (`PARALLEL=2`)** | **PASS** | `2.37 s` wall time | `42.17 tok/s` (agg) |
+| **4. 4-Task SWE Architecture Suite** | **PASS** | 4/4 passed (AVL Tree, Concurrency, Rate Limiter, Constraints) | `43.20 tok/s` (avg) |
+| **5. Tool / Function Calling Protocol** | **PASS** | Strict JSON arguments extracted and verified | TTFT: `3476.6 ms` |
+| **6. JSON Schema Mode (`response_format`)** | **PASS** | Strict schema conformance and valid JSON generation | `42.44 tok/s` |
+| **7. Prefix / KV Cache Reuse** | **PASS** | **3.93x speedup** (Cold: `6.192 s` → Warm: `1.574 s`) | Host slots active |
+| **8. Client Socket Abort Recovery** | **PASS** | Engine slot recovery latency: `301.3 ms` | Slots released |
+| **9. Stop Sequences & Greedy Sampling** | **PASS** | Deterministic reproducible generation (`temperature=0.0`) | Tokens suppressed |
+| **10. High-Entropy Key-Value Recall** | **PASS** | Needle-in-a-haystack recall with safety-reasoning resilience | `42.79 tok/s` |
+| **11. Precision Ledger Reconciliation** | **PASS** | Exact ending balance `$11,489.41` matched across 25 steps | `43.13 tok/s` |
+| **12. Executable Code Unit Testing** | **PASS** | Generated `LRUCache` dynamically passed unit assertions | `43.16 tok/s` |
+| **13. API Error Protocol Compliance** | **PASS** | HTTP 400/422 correctly handled for invalid inputs | Protocol OK |
+| **14. Dynamic Context Scaling (4k → 204k)**| **PASS** | Tested 4k → 203.8k tokens with 0 failures or OOM | `603.7` prefill / `29.12` decode |
+
+### Verified Context Scaling Ladder (Cold Prefill vs. Decode Throughput)
+
+Using unique prompt salting to test true physical hardware performance without warm cache distortions:
+
+| Milestone Target | Ingested Prompt | Cached | Prefill TTFT | Cold Prefill Rate | Decode Speed | Status |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **~4k** | 4,047 toks | 0 | 2.89 s | **1,401.5 tok/s** | 44.47 tok/s | **PASS** |
+| **~8k** | 8,055 toks | 0 | 5.57 s | **1,447.4 tok/s** | 44.63 tok/s | **PASS** |
+| **~16k** | 16,064 toks | 0 | 11.50 s | **1,396.7 tok/s** | 43.59 tok/s | **PASS** |
+| **~32k** | 32,035 toks | 0 | 25.12 s | **1,275.5 tok/s** | 41.84 tok/s | **PASS** |
+| **~64k** | 64,037 toks | 0 | 60.45 s | **1,059.3 tok/s** | 38.62 tok/s | **PASS** |
+| **~128k** | 128,074 toks | 0 | 162.38 s | **788.7 tok/s** | 33.51 tok/s | **PASS** |
+| **~200k** | 200,067 toks | 0 | 327.56 s (~5.4 min) | **610.8 tok/s** | 29.30 tok/s | **PASS** |
+| **~204k (Max Ceiling)** | **203,852 toks** | **0** | **337.69 s (~5.6 min)** | **603.7 tok/s** | **29.12 tok/s** | **PASS** |
 
 ---
 
