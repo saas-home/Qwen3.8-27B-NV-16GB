@@ -137,6 +137,30 @@ In your client or agent settings:
 }
 ```
 
+### Pi Agent Configuration (`~/.pi/agent/models.json`)
+```json
+{
+  "providers": {
+    "local-openai": {
+      "baseUrl": "http://127.0.0.1:8888/v1",
+      "apiKey": "local-placeholder",
+      "api": "openai-completions",
+      "models": [
+        {
+          "id": "qwen3.8-27b",
+          "name": "Qwen3.8 27B (204.8k Context - 16GB)",
+          "contextWindow": 204800,
+          "maxTokens": 16384,
+          "compat": {
+            "supportsDeveloperRole": false
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
 ---
 
 ## Automated Enterprise Benchmark Suite
