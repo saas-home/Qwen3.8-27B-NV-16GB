@@ -360,11 +360,33 @@ PYTHON=.venv/bin/python
 # venv tools (ninja, …) must stay findable for the engine's JIT fallback.
 export PATH="$(pwd)/.venv/bin:$PATH"
 
-# --- engine version guard ---------------------------------------------------
+# --- engine version guard & auto-upgrade ------------------------------------
+# Auto-detect when EXL3_VERSION in .env changes and update the installed wheel
+_want_ver="${EXL3_VERSION:-1.5.0}"
+_cur_ver="$("$PYTHON" -c 'from exllamav3.version import __version__; print(__version__)' 2>/dev/null || echo unknown)"
+if [ "$_cur_ver" != "unknown" ] && [ "$_cur_ver" != "$_want_ver" ]; then
+    echo "ExLlamaV3 version change detected: installed ${_cur_ver} -> requested ${_want_ver}"
+    echo "Updating exllamav3..."
+    _engine_wheel=""
+    if [ ! -f exllamav3/__init__.py ] && [ -z "${EXL3_REPO:-}" ]; then
+        _engine_wheel="$("$PYTHON" tools/wheels.py --url --python "$PYTHON" 2>/dev/null || true)"
+    fi
+    if [ -n "$_engine_wheel" ]; then
+        echo "  Installing prebuilt wheel: ${_engine_wheel}"
+        "$PYTHON" -m pip install --upgrade --only-binary :all: --no-build-isolation "$_engine_wheel" || _engine_wheel=""
+    fi
+    if [ -z "$_engine_wheel" ]; then
+        _engine_src="${EXL3_REPO:-git+https://github.com/turboderp-org/exllamav3.git@v${_want_ver}}"
+        echo "  Compiling from source: ${_engine_src}"
+        "$PYTHON" -m pip install --upgrade --no-build-isolation "${_engine_src}"
+    fi
+    _cur_ver="$("$PYTHON" -c 'from exllamav3.version import __version__; print(__version__)' 2>/dev/null || echo unknown)"
+    echo "  exllamav3 is now ${_cur_ver}"
+fi
+
 # v1.4.4+ is mandatory: this quant ships a quantized vision tower (vision_bits 3),
 # which older builds decode incorrectly, and stock v1.4.4+ is what this kit is
 # validated against.
-_want_ver="${EXL3_VERSION:-1.5.0}"
 if ! "$PYTHON" -c 'import sys; from exllamav3.version import __version__ as v; sys.exit(0 if tuple(map(int, v.split(".")[:3])) >= (1, 4, 4) else (print(" !! unexpected exllamav3 version:", v) or 1))' 2>/dev/null; then
     _gotver="$("$PYTHON" -c 'from exllamav3.version import __version__; print(__version__)' 2>/dev/null || echo unknown)"
     echo "ERROR: this kit requires ExLlamaV3 >= v1.4.4 (configured: ${_want_ver}), but the venv has '$_gotver'." >&2
@@ -507,6 +529,7 @@ fi
 if [ -n "${PARALLEL:-}" ]; then
     cmd+=(--parallel "$PARALLEL")
 fi
+[ -n "${CHUNK_SIZE:-}" ] && export CHUNK_SIZE
 [ -n "${EXL3_VISION_PINNED:-}" ] && export EXL3_VISION_PINNED
 
 # --- the harness ----------------------------------------------------------

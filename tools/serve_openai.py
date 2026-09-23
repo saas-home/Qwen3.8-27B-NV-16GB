@@ -316,6 +316,9 @@ def build_model(argv, use_draft = True):
     ccs_bytes = int(getattr(args, "cpu_cache_size", 0.0) * (1024 ** 3))
     dt = args.draft_tokens if getattr(args, "draft_tokens", 0) > 0 else None
     ambs = getattr(args, "autosplit_max_batch_size", 1) or 1
+    chunk_size = int(os.environ.get("CHUNK_SIZE", 0)) or getattr(args, "chunk_size", 4096) or 4096
+    args.chunk_size = chunk_size
+    print(f" == prefill chunk size: {chunk_size} tokens", flush = True)
     if use_draft:
         model, config, cache, tokenizer, draft_model, draft_config, draft_cache = \
             model_init.init(args, progress = True)
@@ -325,6 +328,7 @@ def build_model(argv, use_draft = True):
             cpu_cache_size = ccs_bytes,
             num_draft_tokens = dt,
             max_batch_size = ambs,
+            max_chunk_size = chunk_size,
         )
     else:
         model, config, cache, tokenizer = model_init.init(args, progress = True)
@@ -332,6 +336,7 @@ def build_model(argv, use_draft = True):
             model, cache, tokenizer,
             cpu_cache_size = ccs_bytes,
             max_batch_size = ambs,
+            max_chunk_size = chunk_size,
         )
     return generator, tokenizer, config
 
@@ -815,6 +820,8 @@ def generate_full(generator, tokenizer, messages, max_tokens, temperature,
             job = run_once()
     seq = job.sequences[0]
     out_toks = int(seq.sequence_ids.seq_len - prompt_toks)
+    cached_pages = getattr(job, "cached_pages", 0)
+    cached_toks = min(cached_pages * 256, prompt_toks)
     content, calls = parse_tool_calls(text, schemas)
     if calls:
         finish = "tool_calls"
@@ -823,7 +830,7 @@ def generate_full(generator, tokenizer, messages, max_tokens, temperature,
                   "stop_condition": "stop", "banned": "content_filter",
                   "cancelled": "stop"}.get(reason, "stop")
     reasoning, content = split_reasoning(content)
-    return text, calls, finish, prompt_toks, out_toks, reasoning, content
+    return text, calls, finish, prompt_toks, out_toks, reasoning, content, cached_toks
 
 
 async def models(request):
@@ -956,7 +963,7 @@ async def chat_completions(request):
     import asyncio
     if not req["stream"]:
         try:
-            text, calls, finish, ptoks, otoks, reasoning, content = await asyncio.to_thread(
+            text, calls, finish, ptoks, otoks, reasoning, content, cached_toks = await asyncio.to_thread(
                 generate_full, generator, tokenizer, req["messages"],
                 req["max_tokens"], req["temperature"], req["top_p"], req["top_k"],
                 req["seed"], req["tools"], req["tool_choice"], req["stop"],
@@ -975,13 +982,19 @@ async def chat_completions(request):
             msg["reasoning_content"] = reasoning
         if calls:
             msg["tool_calls"] = calls
+        usage = {
+            "prompt_tokens": ptoks,
+            "completion_tokens": otoks,
+            "total_tokens": ptoks + otoks,
+        }
+        if cached_toks > 0:
+            usage["prompt_tokens_details"] = {"cached_tokens": cached_toks}
         return web.json_response({
             "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
             "object": "chat.completion", "created": int(time.time()),
             "model": req["model_id"],
             "choices": [{"index": 0, "message": msg, "finish_reason": finish}],
-            "usage": {"prompt_tokens": ptoks, "completion_tokens": otoks,
-                      "total_tokens": ptoks + otoks},
+            "usage": usage,
         })
 
     # ---- streaming (SSE) ----
@@ -1010,7 +1023,7 @@ async def chat_completions(request):
 
         def worker():
             try:
-                text, calls, finish, ptoks, otoks, reasoning, content = generate_full(
+                text, calls, finish, ptoks, otoks, reasoning, content, cached_toks = generate_full(
                     generator, tokenizer, req["messages"], req["max_tokens"],
                     req["temperature"], req["top_p"], req["top_k"],
                     req["seed"], req["tools"], req["tool_choice"], req["stop"],
@@ -1020,7 +1033,7 @@ async def chat_completions(request):
                     should_stop = gone.is_set)
                 loop.call_soon_threadsafe(
                     queue.put_nowait,
-                    ("done", (calls, finish, reasoning, content, ptoks, otoks)))
+                    ("done", (calls, finish, reasoning, content, ptoks, otoks, cached_toks)))
             except Exception as e:
                 import traceback
                 print(f" !! [{time.strftime('%H:%M:%S')}] worker error: {type(e).__name__}: {e}\n{traceback.format_exc()}", flush = True)
@@ -1125,8 +1138,8 @@ async def chat_completions(request):
                     pending += payload
                     await flush_pending()
                 elif kind == "done":
-                    calls, finish, reasoning, content, ptoks, otoks = payload
-                    print(f" <- [{time.strftime('%H:%M:%S')}] done: finish={finish}, prompt_toks={ptoks}, out_toks={otoks}, reasoning_len={len(reasoning or '')}, content_len={len(content or '')}", flush = True)
+                    calls, finish, reasoning, content, ptoks, otoks, cached_toks = payload
+                    print(f" <- [{time.strftime('%H:%M:%S')}] done: finish={finish}, prompt_toks={ptoks}, cached_toks={cached_toks}, out_toks={otoks}, reasoning_len={len(reasoning or '')}, content_len={len(content or '')}", flush = True)
                     await flush_pending(final = True)
                     if forced_choice:
                         # Buffered path (no deltas were streamed): emit the
@@ -1140,12 +1153,17 @@ async def chat_completions(request):
                             await send_call(c)
                     await send({}, finish = finish)
                     if req["include_usage"]:
+                        usage = {
+                            "prompt_tokens": ptoks,
+                            "completion_tokens": otoks,
+                            "total_tokens": ptoks + otoks,
+                        }
+                        if cached_toks > 0:
+                            usage["prompt_tokens_details"] = {"cached_tokens": cached_toks}
                         tail = {"id": cid, "object": "chat.completion.chunk",
                                 "created": int(time.time()), "model": model_id,
                                 "choices": [],
-                                "usage": {"prompt_tokens": ptoks,
-                                          "completion_tokens": otoks,
-                                          "total_tokens": ptoks + otoks}}
+                                "usage": usage}
                         await resp.write(f"data: {json.dumps(tail)}\n\n".encode())
                     await resp.write(b"data: [DONE]\n\n")
                     break
