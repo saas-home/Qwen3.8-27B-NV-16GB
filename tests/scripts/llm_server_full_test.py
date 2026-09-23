@@ -31,7 +31,7 @@ import tempfile
 import subprocess
 import uuid
 from urllib.parse import urlparse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 IMAGE_PATH = os.path.join(BASE_DIR, "image.png")
@@ -1142,6 +1142,7 @@ def main():
     parser.add_argument("--test", "-t", default=None, help="Run specific test(s) by number or name (e.g. 14, '11,12', '1-5', 'context_scaling')")
     parser.add_argument("--out", "-o", help="Path to write JSON benchmark report")
     parser.add_argument("--auto", "-y", action="store_true", help="Non-interactive auto-selection mode")
+    parser.add_argument("--parallel-suite", action="store_true", help="Execute independent functional tests concurrently matching parallel slots")
     args = parser.parse_args()
 
     log("\n" + "="*88, bold=True)
@@ -1253,34 +1254,78 @@ def main():
 
     t_suite_start = time.perf_counter()
 
-    if 1 in selected_tests:
-        report["results"]["streaming"] = run_test_streaming(client)
-    if 2 in selected_tests:
-        report["results"]["vision"] = run_test_vision(client)
-    if 3 in selected_tests:
-        report["results"]["concurrency"] = run_test_concurrency(client, parallel)
-    if 4 in selected_tests:
-        report["results"]["capabilities_4tasks"] = run_test_capabilities(client)
-    if 5 in selected_tests:
-        report["results"]["tool_calling"] = run_test_tool_calling(client)
-    if 6 in selected_tests:
-        report["results"]["json_schema"] = run_test_json_schema(client)
-    if 7 in selected_tests:
-        report["results"]["prefix_caching"] = run_test_prefix_caching(client)
-    if 8 in selected_tests:
-        report["results"]["client_abort"] = run_test_client_abort(client)
-    if 9 in selected_tests:
-        report["results"]["stop_sequences"] = run_test_stop_sequences(client)
-    if 10 in selected_tests:
-        report["results"]["high_entropy_recall"] = run_test_high_entropy(client)
-    if 11 in selected_tests:
-        report["results"]["extreme_precision"] = run_test_extreme_precision(client)
-    if 12 in selected_tests:
-        report["results"]["code_execution"] = run_test_code_execution(client)
-    if 13 in selected_tests:
-        report["results"]["error_handling"] = run_test_error_handling(client)
-    if 14 in selected_tests:
-        report["results"]["context_scaling"] = run_test_context_scaling(client, milestones)
+    if args.parallel_suite:
+        log(f"\n[Parallel Suite Active] Dispatching independent functional tests concurrently with {parallel} slots...", bold=True, color=CYAN)
+        parallel_candidates = []
+        if 1 in selected_tests:
+            parallel_candidates.append(("streaming", lambda: run_test_streaming(client)))
+        if 2 in selected_tests:
+            parallel_candidates.append(("vision", lambda: run_test_vision(client)))
+        if 4 in selected_tests:
+            parallel_candidates.append(("capabilities_4tasks", lambda: run_test_capabilities(client)))
+        if 5 in selected_tests:
+            parallel_candidates.append(("tool_calling", lambda: run_test_tool_calling(client)))
+        if 6 in selected_tests:
+            parallel_candidates.append(("json_schema", lambda: run_test_json_schema(client)))
+        if 9 in selected_tests:
+            parallel_candidates.append(("stop_sequences", lambda: run_test_stop_sequences(client)))
+        if 10 in selected_tests:
+            parallel_candidates.append(("high_entropy_recall", lambda: run_test_high_entropy(client)))
+        if 11 in selected_tests:
+            parallel_candidates.append(("extreme_precision", lambda: run_test_extreme_precision(client)))
+        if 12 in selected_tests:
+            parallel_candidates.append(("code_execution", lambda: run_test_code_execution(client)))
+        if 13 in selected_tests:
+            parallel_candidates.append(("error_handling", lambda: run_test_error_handling(client)))
+
+        with ThreadPoolExecutor(max_workers=parallel) as pool:
+            futures = {pool.submit(fn): name for name, fn in parallel_candidates}
+            for fut in as_completed(futures):
+                name = futures[fut]
+                try:
+                    report["results"][name] = fut.result()
+                except Exception as e:
+                    log(f"Error in parallel test {name}: {e}", color=RED)
+                    report["results"][name] = {"status": "FAIL", "error": str(e)}
+
+        # Isolated tests run sequentially after the parallel matrix
+        if 3 in selected_tests:
+            report["results"]["concurrency"] = run_test_concurrency(client, parallel)
+        if 7 in selected_tests:
+            report["results"]["prefix_caching"] = run_test_prefix_caching(client)
+        if 8 in selected_tests:
+            report["results"]["client_abort"] = run_test_client_abort(client)
+        if 14 in selected_tests:
+            report["results"]["context_scaling"] = run_test_context_scaling(client, milestones)
+    else:
+        if 1 in selected_tests:
+            report["results"]["streaming"] = run_test_streaming(client)
+        if 2 in selected_tests:
+            report["results"]["vision"] = run_test_vision(client)
+        if 3 in selected_tests:
+            report["results"]["concurrency"] = run_test_concurrency(client, parallel)
+        if 4 in selected_tests:
+            report["results"]["capabilities_4tasks"] = run_test_capabilities(client)
+        if 5 in selected_tests:
+            report["results"]["tool_calling"] = run_test_tool_calling(client)
+        if 6 in selected_tests:
+            report["results"]["json_schema"] = run_test_json_schema(client)
+        if 7 in selected_tests:
+            report["results"]["prefix_caching"] = run_test_prefix_caching(client)
+        if 8 in selected_tests:
+            report["results"]["client_abort"] = run_test_client_abort(client)
+        if 9 in selected_tests:
+            report["results"]["stop_sequences"] = run_test_stop_sequences(client)
+        if 10 in selected_tests:
+            report["results"]["high_entropy_recall"] = run_test_high_entropy(client)
+        if 11 in selected_tests:
+            report["results"]["extreme_precision"] = run_test_extreme_precision(client)
+        if 12 in selected_tests:
+            report["results"]["code_execution"] = run_test_code_execution(client)
+        if 13 in selected_tests:
+            report["results"]["error_handling"] = run_test_error_handling(client)
+        if 14 in selected_tests:
+            report["results"]["context_scaling"] = run_test_context_scaling(client, milestones)
 
     total_suite_time = time.perf_counter() - t_suite_start
     report["total_suite_wall_time_s"] = round(total_suite_time, 2)

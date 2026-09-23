@@ -420,13 +420,41 @@ def bootstrap(cfg: dict[str, str]) -> None:
     print()
 
 
-def require_engine_version() -> None:
+def require_engine_version(cfg: dict[str, str] | None = None) -> None:
     r = subprocess.run(
         [str(VENV_PY), "-c",
          "from exllamav3.version import __version__ as v; print(v)"],
         capture_output=True, text=True, cwd=str(ROOT),
     )
     ver = (r.stdout or "").strip() or "unknown"
+    want_ver = (cfg or {}).get("EXL3_VERSION") or os.environ.get("EXL3_VERSION") or "1.5.0"
+    if ver != "unknown" and ver != want_ver:
+        info(f"ExLlamaV3 version change detected: installed {ver} -> requested {want_ver}")
+        info("Updating exllamav3...")
+        import wheels
+        tags = wheels.interpreter_tags(VENV_PY)
+        cuda = wheels.cuda_tag((cfg or {}).get("TORCH_INDEX_URL") or DEFAULT_TORCH_INDEX)
+        r_torch = subprocess.run([str(VENV_PY), "-c", "import torch; print(torch.__version__.split('+')[0])"],
+                                 capture_output=True, text=True, cwd=str(ROOT))
+        torch_ver = (r_torch.stdout or "").strip()
+        wheel_url = wheels.engine_wheel_url(tags, torch_ver, cuda)
+        updated = False
+        if wheel_url:
+            info(f"Installing prebuilt wheel: {wheel_url}")
+            r_pip = run(pip_cmd("install", "--upgrade", "--only-binary", ":all:", "--no-build-isolation", wheel_url), cwd=str(ROOT))
+            updated = (r_pip.returncode == 0)
+        if not updated:
+            src = (cfg or {}).get("EXL3_REPO") or f"git+https://github.com/turboderp-org/exllamav3.git@v{want_ver}"
+            info(f"Installing from source: {src}")
+            run(pip_cmd("install", "--upgrade", "--no-build-isolation", src), cwd=str(ROOT))
+        r = subprocess.run(
+            [str(VENV_PY), "-c",
+             "from exllamav3.version import __version__ as v; print(v)"],
+            capture_output=True, text=True, cwd=str(ROOT),
+        )
+        ver = (r.stdout or "").strip() or "unknown"
+        info(f"exllamav3 is now {ver}")
+
     import re
     ver_nums = tuple(map(int, re.findall(r"\d+", ver)[:3])) if ver != "unknown" else ()
     if r.returncode != 0 or not ver_nums or ver_nums < (1, 4, 4):
@@ -1346,6 +1374,8 @@ def server_command(cfg: dict[str, str]):
         cmd.extend(["--cpu_cache_size", cpu_cache])
     if cfg.get("PARALLEL"):
         cmd.extend(["--parallel", str(cfg["PARALLEL"])])
+    if cfg.get("CHUNK_SIZE"):
+        os.environ["CHUNK_SIZE"] = str(cfg["CHUNK_SIZE"])
     cmd.extend(["--vision", vision_mode, "--image_max_pixels", image_max_pixels])
     ui = ui_mode(cfg)
     cmd.extend(["--ui", "off" if ui == "no" else "on"])
@@ -1440,7 +1470,7 @@ def main() -> int:
             "Delete .venv and run windows\\START-HERE.bat again after fixing that."
         )
 
-    require_engine_version()
+    require_engine_version(cfg)
 
     # Which of the downloaded models? Asked only when there is more than one
     # possible answer, and Enter is always the one that ran last. Coming out of
