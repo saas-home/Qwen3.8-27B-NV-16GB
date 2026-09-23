@@ -1374,6 +1374,8 @@ def server_command(cfg: dict[str, str]):
         cmd.extend(["--cpu_cache_size", cpu_cache])
     if cfg.get("PARALLEL"):
         cmd.extend(["--parallel", str(cfg["PARALLEL"])])
+    if cfg.get("CHUNK_SIZE"):
+        os.environ["CHUNK_SIZE"] = str(cfg["CHUNK_SIZE"])
     cmd.extend(["--vision", vision_mode, "--image_max_pixels", image_max_pixels])
     ui = ui_mode(cfg)
     cmd.extend(["--ui", "off" if ui == "no" else "on"])

@@ -529,6 +529,7 @@ fi
 if [ -n "${PARALLEL:-}" ]; then
     cmd+=(--parallel "$PARALLEL")
 fi
+[ -n "${CHUNK_SIZE:-}" ] && export CHUNK_SIZE
 [ -n "${EXL3_VISION_PINNED:-}" ] && export EXL3_VISION_PINNED
 
 # --- the harness ----------------------------------------------------------
