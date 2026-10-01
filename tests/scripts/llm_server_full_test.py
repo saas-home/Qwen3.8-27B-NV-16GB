@@ -235,19 +235,21 @@ def detect_max_context(model_obj):
     return 32768
 
 
-def build_context_milestones(max_context: int):
-    standard_targets = [4000, 8000, 16000, 32000, 64000, 128000, 200000, 256000, 512000, 1000000]
+def build_context_milestones(max_context: int, max_ratio: float = 0.80):
+    standard_targets = [4000, 8000, 16000, 32000, 64000, 128000, 256000, 512000, 1000000]
+    effective_cap = int(max_context * max_ratio)
     # Reserve a safety buffer for completion tokens (64) + prompt formatting/salt (~200)
-    headroom = min(1000, max(256, int(max_context * 0.005)))
-    safe_ceiling = max(1000, max_context - headroom)
+    headroom = min(1000, max(256, int(effective_cap * 0.005)))
+    safe_ceiling = max(1000, effective_cap - headroom)
 
     milestones = [t for t in standard_targets if t <= safe_ceiling]
     if not milestones:
         milestones = [min(4000, safe_ceiling)]
 
-    # Always include the true maximum supported context ceiling if not already present
+    # Include the upper ceiling up to max_ratio if not already present
     if safe_ceiling > milestones[-1]:
-        milestones.append(safe_ceiling)
+        rounded_ceiling = (safe_ceiling // 100) * 100
+        milestones.append(rounded_ceiling)
     return sorted(list(set(milestones)))
 
 
@@ -1744,6 +1746,8 @@ def main():
                         help="Fast smoke qualification mode (compact context horizons, skips heavy prefill)")
     parser.add_argument("--adversarial-depth", type=int, default=32000,
                         help="Target context depth for adversarial frontier tests (default: 32000)")
+    parser.add_argument("--context-ratio", type=float, default=0.80,
+                        help="Maximum fraction of context window to test in Test 14 (default: 0.80 for 80%%)")
     parser.add_argument("--out", "-o", help="Path to write JSON benchmark report")
     parser.add_argument("--auto", "-y", action="store_true", help="Non-interactive auto-selection mode")
     parser.add_argument("--parallel-suite", action="store_true", help="Execute independent functional tests concurrently matching parallel slots")
@@ -1827,9 +1831,10 @@ def main():
         adv_depth = args.adversarial_depth
         log(f"Context Scaling Targets (Overridden by flag): {milestones}")
     else:
-        milestones = build_context_milestones(max_context)
+        milestones = build_context_milestones(max_context, max_ratio=args.context_ratio)
         adv_depth = args.adversarial_depth
-        log(f"Adopted Context Scaling Targets: {milestones}")
+        pct_label = f"{int(args.context_ratio * 100)}%"
+        log(f"Adopted Context Scaling Targets (up to {pct_label} context): {milestones}")
 
     # 4. Detect / Configure Concurrency & Parallel Slots
     health = client.fetch_health()

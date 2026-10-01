@@ -49,6 +49,9 @@ python3 tests/scripts/llm_server_full_test.py --auto --test 16
 python3 tests/scripts/llm_server_full_test.py --auto --test 15-19
 python3 tests/scripts/llm_server_full_test.py --auto --test 1,5,16,18
 
+# Run context test up to custom percentage (default: 0.80 for 80%)
+python3 tests/scripts/llm_server_full_test.py --auto --test 14 --context-ratio 0.80
+
 # Target remote LLM server endpoint
 python3 tests/scripts/llm_server_full_test.py \
   --endpoint http://192.168.1.50:8888/v1 \
