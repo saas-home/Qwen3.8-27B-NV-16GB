@@ -15,7 +15,7 @@ Comprehensive 14-stage test and evaluation harness for enterprise software archi
   2. Multimodal Vision Document Extraction
   3. Continuous Batching Throughput & Latency Scaling (`--parallel` / `-p`)
   4. 4-Task Architecture Suite (Algorithms, Concurrency Debugging, System Design, Hidden Constraints)
-  5. Strict OpenAI Tool / Function Calling Protocol
+  5. Strict OpenAI Tool / Function Calling Protocol with Autonomous Quota Recovery
   6. Structured JSON Schema Mode (`response_format`)
   7. Prefix Caching / KV Reuse Acceleration (cold vs warm speedup ratio)
   8. Client Socket Abort Recovery (verifies GPU slot release)
@@ -24,22 +24,36 @@ Comprehensive 14-stage test and evaluation harness for enterprise software archi
   11. Extreme Precision Floating-Point Financial Ledger Reconciliation
   12. Dynamic Code Generation & Sandbox Execution Testing
   13. API Error Envelope Protocol Compliance
-  14. Context Scaling Milestone Breakdown with Prefix Isolation (dual cold vs effective throughput metrics)
+  14. Dynamic Context Scaling Horizon (Prefix Isolation & Accuracy)
+  15. Adversarial Multi-Hop Graph Traversal with Deprecated Version Distractors
+  16. Novel Algorithmic Code Synthesis & Automated 5,000-Op Property Fuzz Testing
+  17. Combinatorial Anti-Constraint & Negative Instruction Following (IFEval Tier)
+  18. Counterfactual Axiomatic Symbolic Deduction (Non-Commutative Modular Algebra)
+  19. Extreme Frontier-Depth Multi-Needle Precision (0.5%, 50%, 99.5% Depth)
 - Terminal summary scorecard and comprehensive JSON report export.
 
 ### Usage:
 ```bash
-# Interactive mode (prompts for endpoint, model, and parallel clients)
-python3 tests/scripts/llm_server_full_test.py
-
-# Non-interactive automated execution against local server
+# Run full 19-stage qualification benchmark (automated against local server)
 python3 tests/scripts/llm_server_full_test.py --auto
 
-# Target specific endpoint with model and 4 parallel clients
+# Fast smoke qualification mode (compact context horizons, rapid execution)
+python3 tests/scripts/llm_server_full_test.py --auto --quick
+
+# Run specific suite: 'all' (1-19), 'flagship' (1-14), or 'adversarial' (15-19)
+python3 tests/scripts/llm_server_full_test.py --auto --suite flagship
+python3 tests/scripts/llm_server_full_test.py --auto --suite adversarial
+
+# Run specific test numbers or ranges
+python3 tests/scripts/llm_server_full_test.py --auto --test 16
+python3 tests/scripts/llm_server_full_test.py --auto --test 15-19
+python3 tests/scripts/llm_server_full_test.py --auto --test 1,5,16,18
+
+# Target remote LLM server endpoint
 python3 tests/scripts/llm_server_full_test.py \
-  --endpoint http://127.0.0.1:8888/v1 \
+  --endpoint http://192.168.1.50:8888/v1 \
   --model "qwen3.8-27b" \
-  --parallel 2 \
+  --auto \
   --out tests/results/eval_report.json
 ```
 
@@ -146,4 +160,23 @@ Multimodal vision evaluation script for document parsing and entity extraction u
 ### Usage:
 ```bash
 python3 tests/scripts/test_vision.py --url http://127.0.0.1:8888/v1/chat/completions --model qwen3.8-27b-exl3-3.0bpw --out tests/results/vision_result.json
+```
+
+---
+
+## 10. `test_adversarial_agent.py` (Enterprise Hardened Adversarial & Agentic Suite)
+Extreme-difficulty qualification suite specifically designed to challenge quantized KV caches and deep reasoning models with tasks that cannot be solved via pre-training memorization:
+1. **Multi-Hop Graph Traversal with Adversarial Distractors**: Ingests ~100k tokens with versioned temporal distractors (v1.0 deprecated, v2.2 revoked, v3.1 active) requiring complex multi-hop pathfinding.
+2. **Novel Algorithmic Code Synthesis & 5,000-Op Fuzz Testing**: Synthesizes non-standard `ConcurrentMonotonicRingBuffer` and dynamically executes a 5,000-operation property-based fuzz harness checking for race conditions, wrap-arounds, and state invariants.
+3. **Combinatorial Anti-Constraint Adherence (IFEval Tier)**: 6 simultaneous orthogonal negative/structural constraints (Section II lipogram with zero 'e'/'E', Section III word count 90-130 words, Section IV YAML AST validation, forbidden anti-tokens, and security termination stamp).
+4. **Counterfactual Axiomatic Symbolic Deduction**: Non-commutative modular algebra over finite field $\mathbb{Z}_{23}$ testing pure scratchpad reasoning without web memorization.
+5. **Frontier Depth Precision at 99.5% Context Horizon**: 3 needles placed at 0.5%, 50.0%, and 99.5% depth in a 100k+ token window with composite arithmetic verification.
+
+### Usage:
+```bash
+# Run against local server with 100k context depth
+python3 tests/scripts/test_adversarial_agent.py --endpoint http://127.0.0.1:8888/v1 --model qwen3.8-27b
+
+# Run with custom context depth (e.g. 150k tokens)
+python3 tests/scripts/test_adversarial_agent.py --endpoint http://127.0.0.1:8888/v1 --context-depth 150000
 ```

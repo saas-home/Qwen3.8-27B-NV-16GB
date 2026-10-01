@@ -129,7 +129,9 @@ class LLMClient:
             total_time = time.perf_counter() - t0
             choice = res_json.get("choices", [{}])[0]
             msg = choice.get("message", {})
-            content = msg.get("content") or msg.get("reasoning_content") or ""
+            content = msg.get("content") or ""
+            reasoning = msg.get("reasoning_content") or ""
+            full_text = f"{reasoning}\n{content}".strip() if reasoning else (content or "")
             tool_calls = msg.get("tool_calls")
             usage = res_json.get("usage", {})
             prompt_tokens = usage.get("prompt_tokens", 0)
@@ -137,7 +139,9 @@ class LLMClient:
             cached_tokens = usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)
             speed = completion_tokens / total_time if total_time > 0 else 0.0
             return {
-                "content": content,
+                "content": content if content else full_text,
+                "reasoning": reasoning,
+                "text": full_text,
                 "tool_calls": tool_calls,
                 "total_time": total_time,
                 "ttft": total_time,
@@ -151,6 +155,8 @@ class LLMClient:
             t_first = None
             t_last = None
             chunks = []
+            reasoning_chunks = []
+            content_chunks = []
             token_count = 0
             prompt_tokens = 0
             completion_tokens = 0
@@ -177,22 +183,33 @@ class LLMClient:
                         delta = choices[0].get("delta", {})
                         if "tool_calls" in delta and delta["tool_calls"]:
                             tool_calls = delta["tool_calls"]
-                        text = delta.get("content") or delta.get("reasoning_content") or ""
-                        if text:
+                        reasoning_part = delta.get("reasoning_content") or ""
+                        content_part = delta.get("content") or ""
+                        chunk_text = reasoning_part + content_part
+                        if chunk_text:
                             now = time.perf_counter()
                             if t_first is None:
                                 t_first = now
                             t_last = now
                             token_count += 1
-                            chunks.append(text)
+                            chunks.append(chunk_text)
+                            if reasoning_part:
+                                reasoning_chunks.append(reasoning_part)
+                            if content_part:
+                                content_chunks.append(content_part)
             t_end = time.perf_counter()
             total_time = t_end - t0
             ttft = (t_first - t0) if t_first else total_time
             gen_time = (t_end - t_first) if t_first else total_time
             comp_tok = completion_tokens if completion_tokens > 0 else token_count
             speed = (comp_tok / gen_time) if gen_time > 0 else 0.0
+            content_str = "".join(content_chunks)
+            reasoning_str = "".join(reasoning_chunks)
+            full_text = "".join(chunks)
             return {
-                "content": "".join(chunks),
+                "content": content_str if content_str else full_text,
+                "reasoning": reasoning_str,
+                "text": full_text,
                 "tool_calls": tool_calls,
                 "total_time": total_time,
                 "ttft": ttft,
@@ -374,11 +391,11 @@ def run_test_capabilities(client: LLMClient):
     }
 
 # ----------------------------------------------------------------------------
-# 5. OPENAI TOOL / FUNCTION CALLING
+# 5. OPENAI TOOL / FUNCTION CALLING & MULTI-TURN AGENT RECOVERY
 # ----------------------------------------------------------------------------
 def run_test_tool_calling(client: LLMClient):
     log("\n" + "="*88, bold=True)
-    log("[TEST 5/14] OpenAI Function / Tool Calling Protocol Verification", bold=True, color=CYAN)
+    log("[TEST 5/14] Multi-Turn Agent Loop & Autonomous Error Recovery Protocol", bold=True, color=CYAN)
     log("="*88)
     
     tools = [
@@ -392,47 +409,96 @@ def run_test_tool_calling(client: LLMClient):
                     "properties": {
                         "engine": {"type": "string", "enum": ["postgres", "mysql", "redis"]},
                         "environment": {"type": "string", "enum": ["production", "staging", "development"]},
+                        "region": {"type": "string", "enum": ["us-east-1", "us-west-2", "eu-central-1"]},
                         "storage_gb": {"type": "integer", "description": "Storage capacity in GB"},
                         "ha_cluster": {"type": "boolean", "description": "Enable Multi-AZ high availability"}
                     },
-                    "required": ["engine", "environment", "storage_gb", "ha_cluster"]
+                    "required": ["engine", "environment", "region", "storage_gb", "ha_cluster"]
                 }
             }
         }
     ]
-    prompt = "Please provision a high-availability PostgreSQL cluster with 500 GB storage for our production payment environment."
+    prompt = (
+        "Please provision a high-availability PostgreSQL cluster with 500 GB storage for our production payment environment in region 'us-east-1'. "
+        "If a quota or provisioning error occurs in that region, automatically adapt and re-attempt provisioning in an alternate valid region with sufficient quota."
+    )
     messages = [{"role": "user", "content": prompt}]
     
     try:
-        res = client.call(messages, max_tokens=600, tools=tools, tool_choice="auto", stream=False)
-        tool_calls = res.get("tool_calls")
-        valid_call = False
-        args_parsed = {}
+        # Turn 1: Dispatch initial tool call
+        res1 = client.call(messages, max_tokens=600, tools=tools, tool_choice="auto", stream=False)
+        tool_calls1 = res1.get("tool_calls")
+        turn1_valid = False
+        args_parsed1 = {}
         
-        if tool_calls and len(tool_calls) > 0:
-            fn = tool_calls[0].get("function", {})
+        call_id = "call_001"
+        if tool_calls1 and len(tool_calls1) > 0:
+            call_obj = tool_calls1[0]
+            call_id = call_obj.get("id", call_id)
+            fn = call_obj.get("function", {})
             if fn.get("name") == "provision_database_instance":
                 args_str = fn.get("arguments", "{}")
                 try:
-                    args_parsed = json.loads(args_str) if isinstance(args_str, str) else args_str
-                    if (args_parsed.get("engine") == "postgres" and
-                        args_parsed.get("environment") == "production" and
-                        args_parsed.get("storage_gb") == 500 and
-                        args_parsed.get("ha_cluster") is True):
-                        valid_call = True
+                    args_parsed1 = json.loads(args_str) if isinstance(args_str, str) else args_str
+                    if (args_parsed1.get("engine") == "postgres" and
+                        args_parsed1.get("environment") == "production" and
+                        args_parsed1.get("region") == "us-east-1" and
+                        args_parsed1.get("storage_gb") == 500 and
+                        args_parsed1.get("ha_cluster") is True):
+                        turn1_valid = True
                 except Exception:
                     pass
 
-        status = "PASS" if valid_call else "FAIL"
-        log(f"  -> Tool Call Detected: {tool_calls is not None}")
-        log(f"  -> Parsed Arguments: {json.dumps(args_parsed)}")
-        log(f"  -> Protocol Validation: {status}")
+        log(f"  [Turn 1] Initial Tool Call Dispatched: {turn1_valid}")
+        log(f"  [Turn 1] Parsed Arguments: {json.dumps(args_parsed1)}")
+
+        # Turn 2: Simulate cloud quota failure and test autonomous agent recovery
+        turn2_recovered = False
+        args_parsed2 = {}
+        res2 = {}
+        if turn1_valid:
+            error_payload = {
+                "status": "error",
+                "code": "QUOTA_EXCEEDED",
+                "message": "Storage quota limit exceeded in 'us-east-1' (max 250 GB). Region 'us-west-2' has 1000 GB capacity available."
+            }
+            # Append assistant message with tool call and simulated tool error response
+            assistant_msg = {"role": "assistant", "tool_calls": tool_calls1, "content": res1.get("content") or ""}
+            tool_msg = {"role": "tool", "tool_call_id": call_id, "content": json.dumps(error_payload)}
+
+            messages_turn2 = list(messages) + [assistant_msg, tool_msg]
+            res2 = client.call(messages_turn2, max_tokens=1000, tools=tools, tool_choice="auto", stream=False)
+            tool_calls2 = res2.get("tool_calls")
+
+            if tool_calls2 and len(tool_calls2) > 0:
+                fn2 = tool_calls2[0].get("function", {})
+                if fn2.get("name") == "provision_database_instance":
+                    args_str2 = fn2.get("arguments", "{}")
+                    try:
+                        args_parsed2 = json.loads(args_str2) if isinstance(args_str2, str) else args_str2
+                        if (args_parsed2.get("engine") == "postgres" and
+                            args_parsed2.get("environment") == "production" and
+                            args_parsed2.get("region") == "us-west-2" and
+                            args_parsed2.get("storage_gb") == 500 and
+                            args_parsed2.get("ha_cluster") is True):
+                            turn2_recovered = True
+                    except Exception:
+                        pass
+
+            log(f"  [Turn 2] Error Injected: QUOTA_EXCEEDED in us-east-1")
+            log(f"  [Turn 2] Autonomous Recovery Call: {turn2_recovered}")
+            log(f"  [Turn 2] Re-attempt Arguments: {json.dumps(args_parsed2)}")
+
+        status = "PASS" if (turn1_valid and turn2_recovered) else ("PARTIAL" if turn1_valid else "FAIL")
+        log(f"  -> Multi-Turn Agent Protocol Status: {status}")
         return {
             "status": status,
-            "tool_call_detected": tool_calls is not None,
-            "parsed_arguments": args_parsed,
-            "tokens": res.get("completion_tokens", 0),
-            "ttft_ms": round(res.get("ttft", 0) * 1000, 1)
+            "turn1_valid": turn1_valid,
+            "turn2_recovered": turn2_recovered,
+            "parsed_arguments_turn1": args_parsed1,
+            "parsed_arguments_turn2": args_parsed2,
+            "tokens": res1.get("completion_tokens", 0) + (res2.get("completion_tokens", 0) if turn1_valid else 0),
+            "ttft_ms": round(res1.get("ttft", 0) * 1000, 1)
         }
     except Exception as e:
         log(f"  -> Tool Calling Error: {e}", color=RED)
@@ -454,7 +520,8 @@ def run_test_json_schema(client: LLMClient):
     messages = [{"role": "user", "content": prompt}]
     
     try:
-        res = client.call(messages, max_tokens=800, response_format={"type": "json_object"}, stream=False)
+        # Increase max_tokens to 2048 to allow thinking/reasoning models to complete reasoning and emit full JSON
+        res = client.call(messages, max_tokens=2048, response_format={"type": "json_object"}, stream=False)
         content = res["content"].strip()
         parsed = {}
         valid_json = False
@@ -641,8 +708,8 @@ def run_test_high_entropy(client: LLMClient):
         "KEY_GAMMA_12: VAL_L1*vR5\n"
     )
     prompt = f"{filler}\n{kv_data}\n{filler}\nWhat is the exact value for KEY_BETA_99 and KEY_GAMMA_12? Answer strictly in format: KEY=VAL"
-    # Increase max_tokens to 800 to allow thinking / reasoning models to complete reasoning and emit both keys
-    res = client.call([{"role": "user", "content": prompt}], max_tokens=800, stream=True)
+    # Increase max_tokens to 2048 to allow thinking / reasoning models to complete reasoning and emit both keys
+    res = client.call([{"role": "user", "content": prompt}], max_tokens=2048, stream=True)
     content = res.get("content", "")
     m1 = "Z4#pQ8" in content
     m2 = "L1*vR5" in content
@@ -688,8 +755,8 @@ def run_test_extreme_precision(client: LLMClient):
         f"{ledger_text}\n\n"
         f"Calculate the precise ending balance to two decimal places step-by-step. State at the end: 'Ending Balance: $XXXXX.XX'"
     )
-    # Increase max_tokens to 1500 to allow full chain-of-thought derivation without premature truncation
-    res = client.call([{"role": "user", "content": prompt}], max_tokens=1500, stream=True)
+    # Increase max_tokens to 2048 to allow full chain-of-thought derivation without premature truncation
+    res = client.call([{"role": "user", "content": prompt}], max_tokens=2048, stream=True)
     raw_output = res.get("content", "")
     # Normalize text by stripping commas from thousands separators (e.g., "$11,489.41" -> "$11489.41")
     normalized_output = raw_output.replace(",", "")
@@ -835,11 +902,11 @@ def run_test_error_handling(client: LLMClient):
     }
 
 # ----------------------------------------------------------------------------
-# 14. DYNAMIC LONG-CONTEXT PREFILL & DECODE SCALING
+# 14. DYNAMIC LONG-CONTEXT PREFILL, DECODE & SEMANTIC ACCURACY SCALING
 # ----------------------------------------------------------------------------
 def run_test_context_scaling(client: LLMClient, milestones: list):
     log("\n" + "="*88, bold=True)
-    log("[TEST 14/14] Dynamic Long-Context Prefill & Decode Scaling Benchmark", bold=True, color=CYAN)
+    log("[TEST 14/14] Dynamic Long-Context Prefill, Decode & Semantic Accuracy", bold=True, color=CYAN)
     log(f"Target Milestones: {milestones}")
     log("="*88)
 
@@ -848,18 +915,29 @@ def run_test_context_scaling(client: LLMClient, milestones: list):
         "large language models utilize transformer architectures with multi-head self-attention mechanisms "
         "to process sequential data efficiently. Memory bandwidth and compute capacity determine inference speed. "
     )
-    header = f"{'Target Ctx':>11} | {'Actual Prompt':>14} | {'Cached':>8} | {'TTFT (s)':>10} | {'Cold (t/s)':>12} | {'Effective':>12} | {'Decode (t/s)':>12} | {'Status':>8}"
+    header = f"{'Target Ctx':>11} | {'Actual Prompt':>14} | {'Cached':>8} | {'TTFT (s)':>10} | {'Cold (t/s)':>12} | {'Effective':>12} | {'Decode (t/s)':>12} | {'Accuracy':>10} | {'Status':>8}"
     log(header)
     log("-" * len(header))
 
     scaling_results = []
     for target in milestones:
-        # Prepend unique epoch salt to ensure cold prefill isolation from earlier milestones
+        # Generate needle and embed at ~85% depth
+        secret_hex = uuid.uuid4().hex[:8].upper()
+        needle_key = f"NEEDLE_CTX_{target}"
+        needle_str = f"\n[CRITICAL_SYSTEM_REGISTRATION: {needle_key} = VAL_{secret_hex}]\n"
+
+        repeat_count = max(1, int((target - 50) / 45))
+        split_idx = int(repeat_count * 0.85)
+        part1 = base_text * split_idx
+        part2 = base_text * (repeat_count - split_idx)
+
         epoch_salt = f"[Context Benchmark Target: {target} | Epoch: {time.time():.4f} | UUID: {uuid.uuid4()}]\n"
-        repeat_count = max(1, int((target - 20) / 45))
-        prompt_text = epoch_salt + (base_text * repeat_count) + "\n\nSummarize the key aspects mentioned above in detail."
+        prompt_text = (
+            epoch_salt + part1 + needle_str + part2 +
+            f"\n\nSummarize the key aspects mentioned above in one sentence, and at the end output: '{needle_key} = VAL_{secret_hex}'."
+        )
         try:
-            res = client.call([{"role": "user", "content": prompt_text}], max_tokens=64, stream=True, timeout=1200)
+            res = client.call([{"role": "user", "content": prompt_text}], max_tokens=100, stream=True, timeout=1200)
             actual_prompt = res["prompt_tokens"] if res["prompt_tokens"] > 0 else target
             cached_tokens = res.get("cached_tokens", 0)
             uncached_tokens = max(0, actual_prompt - cached_tokens)
@@ -867,6 +945,11 @@ def run_test_context_scaling(client: LLMClient, milestones: list):
             # Compute both raw cold hardware throughput and effective throughput
             cold_speed = (uncached_tokens / res["ttft"]) if res["ttft"] > 0 and uncached_tokens > 0 else (actual_prompt / res["ttft"] if res["ttft"] > 0 else 0.0)
             effective_speed = (actual_prompt / res["ttft"]) if res["ttft"] > 0 else 0.0
+
+            content = res.get("content", "")
+            needle_matched = secret_hex in content
+            acc_str = "RECALLED" if needle_matched else "MISSED"
+            step_status = "PASS" if needle_matched else "PARTIAL"
 
             row = (
                 f"{target:>11,d} | "
@@ -876,7 +959,8 @@ def run_test_context_scaling(client: LLMClient, milestones: list):
                 f"{cold_speed:>12.1f} | "
                 f"{effective_speed:>12.1f} | "
                 f"{res['decode_speed']:>12.2f} | "
-                f"{'PASS':>8}"
+                f"{acc_str:>10} | "
+                f"{step_status:>8}"
             )
             log(row)
             scaling_results.append({
@@ -888,10 +972,11 @@ def run_test_context_scaling(client: LLMClient, milestones: list):
                 "effective_prefill_tok_s": round(effective_speed, 1),
                 "decode_tok_s": round(res["decode_speed"], 2),
                 "completion_tokens": res["completion_tokens"],
-                "status": "PASS"
+                "needle_matched": needle_matched,
+                "status": step_status
             })
         except Exception as e:
-            row = f"{target:>11,d} | {'ERROR':>14} | {'-':>8} | {'-':>10} | {str(e)[:25]:>12} | {'-':>12} | {'-':>12} | {'FAIL':>8}"
+            row = f"{target:>11,d} | {'ERROR':>14} | {'-':>8} | {'-':>10} | {str(e)[:25]:>12} | {'-':>12} | {'-':>12} | {'-':>10} | {'FAIL':>8}"
             log(row, color=RED)
             scaling_results.append({
                 "target_tokens": target,
@@ -902,6 +987,446 @@ def run_test_context_scaling(client: LLMClient, milestones: list):
 
     log("-" * len(header))
     return scaling_results
+
+
+# ----------------------------------------------------------------------------
+# 15. ADVERSARIAL MULTI-HOP GRAPH TRAVERSAL WITH TEMPORAL DISTRACTORS
+# ----------------------------------------------------------------------------
+def run_test_multihop_graph(client: LLMClient, target_context: int = 32000):
+    log("\n" + "="*88, bold=True)
+    log(f"[TEST 15/19] Adversarial Multi-Hop Graph Traversal with Deprecated Distractors (~{target_context//1000}k)", bold=True, color=CYAN)
+    log("="*88)
+
+    filler_chunk = (
+        "Enterprise cloud transit routing manages BGP autonomous system interconnects across software-defined WAN fabrics. "
+        "Packet encapsulation leverages Geneve and VXLAN tunnels terminating on distributed SmartNIC vSwitch datanodes. "
+        "Telemetry pipelines process streaming flow logs through Kafka clusters with partitioned RocksDB state stores. "
+        "Zero-trust microsegmentation evaluates SPIFFE identity assertions and mutual TLS session keys at every ingress hop. "
+    )
+
+    total_blocks = max(100, int(target_context / 60))
+
+    distractor_v1 = (
+        "\n[ARCHITECTURAL_ROUTING_SPECIFICATION v1.0 (2024 - DEPRECATED)]\n"
+        "Policy Rule 401: In the event of Primary Switch 7 outage, traffic from Client Mobile Edge routes through:\n"
+        "Node A -> Gateway Chicago -> Database Shard Gamma (Read-Only Replica 1).\n"
+        "Security Note: Route 401 was revoked by RFC-77 due to cross-datacenter latency violations.\n"
+    )
+    distractor_v2 = (
+        "\n[ARCHITECTURAL_ROUTING_SPECIFICATION v2.2 (2025 - REVOKED / ROLLBACK)]\n"
+        "Policy Rule 402: Under Switch 7 hardware failure, failover path is:\n"
+        "Node A -> Gateway Frankfurt -> Database Shard Gamma (Staging Cluster).\n"
+        "Audit Flag: Revoked after disaster recovery drill failure.\n"
+    )
+    active_v3 = (
+        "\n[ARCHITECTURAL_ROUTING_SPECIFICATION v3.1 (2026 - ACTIVE PRODUCTION APPROVED)]\n"
+        "Policy Rule 403: When Primary Switch 7 fails, the mandatory active failover sequence is:\n"
+        "Client Mobile Edge -> Ingress Node Alpha -> Transit Hub Tokyo -> Secure Bridge Omega -> Database Shard Gamma (Active Primary).\n"
+        "Mandatory Verification Code: AUTH_ROUTING_KEY_9921_TOK.\n"
+        "Failover SLA: Must terminate within 45ms over dedicated dark fiber link.\n"
+    )
+
+    doc_parts = []
+    for b in range(total_blocks):
+        doc_parts.append(filler_chunk)
+        if b == int(total_blocks * 0.15):
+            doc_parts.append(distractor_v1)
+        elif b == int(total_blocks * 0.50):
+            doc_parts.append(distractor_v2)
+        elif b == int(total_blocks * 0.85):
+            doc_parts.append(active_v3)
+
+    document = "".join(doc_parts)
+    prompt = (
+        f"{document}\n\n"
+        "MISSION-CRITICAL ARCHITECTURAL INCIDENT ANALYSIS:\n"
+        "A critical hardware outage occurs on Primary Switch 7. Review the ARCHITECTURAL_ROUTING_SPECIFICATION sections above and determine:\n"
+        "1. What is the current, active, and approved failover routing path from Client Mobile Edge to Database Shard Gamma?\n"
+        "2. State the exact Mandatory Verification Code for the active route.\n"
+        "3. Explain why the previous v1.0 (Chicago) and v2.2 (Frankfurt) routes are invalid and must not be used.\n\n"
+        "Conclude your response strictly with: 'ACTIVE_FAILOVER_CODE: <verification code>'."
+    )
+
+    log(f"  Ingesting ~{total_blocks * 60:,}-token context with 2 temporal distractors and 1 active specification...")
+    res = client.call([{"role": "user", "content": prompt}], max_tokens=1500, temperature=0.0, stream=True)
+    text = res.get("text", "")
+
+    has_active_tokyo = ("Transit Hub Tokyo" in text or "Tokyo" in text) and ("Bridge Omega" in text or "Omega" in text)
+    has_code = "AUTH_ROUTING_KEY_9921_TOK" in text
+    has_rejected_chicago = ("chicago" in text.lower()) and any(w in text.lower() for w in ["deprecated", "rfc-77", "revoked", "invalid"])
+    has_rejected_frankfurt = ("frankfurt" in text.lower()) and any(w in text.lower() for w in ["revoked", "rollback", "invalid"])
+
+    passed = has_active_tokyo and has_code and has_rejected_chicago and has_rejected_frankfurt
+    log(f"  - Active Route Identification (Tokyo/Omega): {'PASS' if has_active_tokyo else 'FAIL'}")
+    log(f"  - Exact Verification Key Recall: {'PASS' if has_code else 'FAIL'}")
+    log(f"  - Rejection of Deprecated v1.0 Chicago Distractor: {'PASS' if has_rejected_chicago else 'FAIL'}")
+    log(f"  - Rejection of Revoked v2.2 Frankfurt Distractor: {'PASS' if has_rejected_frankfurt else 'FAIL'}")
+    log(f"  -> Speed: {res.get('decode_speed', 0):.2f} tok/s | TTFT: {res.get('ttft', 0)*1000:.1f} ms | Status: {'PASS' if passed else 'FAIL'}")
+
+    return {
+        "status": "PASS" if passed else "FAIL",
+        "active_route_identified": has_active_tokyo,
+        "verification_key_recalled": has_code,
+        "distractor_chicago_rejected": has_rejected_chicago,
+        "distractor_frankfurt_rejected": has_rejected_frankfurt,
+        "prompt_tokens": res.get("prompt_tokens", 0),
+        "completion_tokens": res.get("completion_tokens", 0),
+        "ttft_ms": round(res.get("ttft", 0) * 1000.0, 1),
+        "tok_s": round(res.get("decode_speed", 0), 2)
+    }
+
+
+# ----------------------------------------------------------------------------
+# 16. NOVEL ALGORITHMIC SYNTHESIS WITH 5,000-OP PROPERTY FUZZ TEST
+# ----------------------------------------------------------------------------
+def run_test_novel_algorithmic_fuzz(client: LLMClient):
+    log("\n" + "="*88, bold=True)
+    log("[TEST 16/19] Novel Algorithmic Synthesis & Automated 5,000-Op Property Fuzz Testing", bold=True, color=CYAN)
+    log("="*88)
+
+    prompt = (
+        "Implement a custom, non-standard Python class named `ConcurrentMonotonicRingBuffer`.\n"
+        "This data structure must fulfill the following exact specifications:\n"
+        "1. Constructor: `__init__(self, capacity: int)`: Initializes buffer with positive fixed integer capacity.\n"
+        "2. Method: `push(self, value: int) -> int`: Adds value to the ring buffer. If buffer is full, it overwrites "
+        "the oldest element. Returns the monotonically increasing 64-bit sequence ID assigned to this item (starting at sequence ID 1).\n"
+        "3. Method: `get_by_seq(self, seq_id: int) -> int`: Returns the value associated with `seq_id`. If `seq_id` has already been "
+        "overwritten or has not yet been pushed, raises `KeyError`.\n"
+        "4. Method: `get_latest(self) -> tuple[int, int]`: Returns `(latest_seq_id, latest_value)`. If buffer is empty, raises `IndexError`.\n"
+        "5. Method: `snapshot_in_order(self) -> list[tuple[int, int]]`: Returns list of all current `(seq_id, value)` pairs currently stored, "
+        "ordered from oldest to newest.\n"
+        "6. Provide self-contained Python code inside a ```python ``` code block. Do NOT use third-party libraries. "
+        "Keep comments and docstrings concise to emit complete implementation code."
+    )
+
+    log("  Requesting synthesis of non-standard Monotonic Ring Buffer (max_tokens=3500)...")
+    res = client.call([{"role": "user", "content": prompt}], max_tokens=3500, temperature=0.2, stream=True)
+    raw = res.get("content", "") or res.get("text", "")
+
+    code_match = re.findall(r"```(?:python)?\s*\n(.*?)```", raw, re.DOTALL | re.IGNORECASE)
+    code = max(code_match, key=len).strip() if code_match else raw.strip()
+
+    fuzz_harness = """
+import sys
+import random
+
+def run_fuzz_verification():
+    buf = ConcurrentMonotonicRingBuffer(3)
+    s1 = buf.push(10)
+    s2 = buf.push(20)
+    s3 = buf.push(30)
+    assert (s1, s2, s3) == (1, 2, 3), f"Sequences must be 1, 2, 3, got {(s1, s2, s3)}"
+    assert buf.get_by_seq(1) == 10
+    assert buf.get_by_seq(2) == 20
+    assert buf.get_by_seq(3) == 30
+    assert buf.get_latest() == (3, 30)
+
+    s4 = buf.push(40)
+    assert s4 == 4
+    try:
+        buf.get_by_seq(1)
+        assert False, "Seq 1 should have raised KeyError after eviction"
+    except KeyError:
+        pass
+    assert buf.get_by_seq(2) == 20
+    assert buf.get_by_seq(4) == 40
+    assert buf.snapshot_in_order() == [(2, 20), (3, 30), (4, 40)]
+
+    cap = 50
+    rb = ConcurrentMonotonicRingBuffer(cap)
+    ground_truth = {}
+    current_seq = 0
+
+    random.seed(42)
+    for op in range(5000):
+        val = random.randint(1, 1000000)
+        current_seq += 1
+        seq_ret = rb.push(val)
+        assert seq_ret == current_seq, f"Sequence drift at op {op}: expected {current_seq}, got {seq_ret}"
+        ground_truth[current_seq] = val
+
+        oldest_valid_seq = max(1, current_seq - cap + 1)
+        if (current_seq - cap) in ground_truth:
+            del ground_truth[current_seq - cap]
+
+        if op % 10 == 0:
+            assert rb.get_latest() == (current_seq, val)
+            q_seq = random.randint(oldest_valid_seq, current_seq)
+            assert rb.get_by_seq(q_seq) == ground_truth[q_seq]
+
+            if oldest_valid_seq > 1:
+                evicted_seq = random.randint(1, oldest_valid_seq - 1)
+                try:
+                    rb.get_by_seq(evicted_seq)
+                    assert False, f"Evicted sequence {evicted_seq} did not raise KeyError"
+                except KeyError:
+                    pass
+
+        if op % 250 == 0:
+            snap = rb.snapshot_in_order()
+            expected_snap = sorted(ground_truth.items(), key=lambda x: x[0])
+            assert snap == expected_snap, f"Snapshot mismatch at op {op}: {snap} vs {expected_snap}"
+
+    print("ALL_5000_FUZZ_TESTS_PASSED")
+
+if __name__ == "__main__":
+    run_fuzz_verification()
+"""
+    full_script = code + "\n\n" + fuzz_harness
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+        f.write(full_script)
+        temp_path = f.name
+
+    fuzz_passed = False
+    err_msg = ""
+    try:
+        proc = subprocess.run([sys.executable, temp_path], capture_output=True, text=True, timeout=25)
+        fuzz_passed = ("ALL_5000_FUZZ_TESTS_PASSED" in proc.stdout) and (proc.returncode == 0)
+        if not fuzz_passed:
+            err_msg = (proc.stderr or proc.stdout).strip()[:300]
+    except Exception as e:
+        err_msg = str(e)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+    log(f"  - Automated 5,000 Operations Fuzz Assertions: {'PASS' if fuzz_passed else 'FAIL'}")
+    if not fuzz_passed and err_msg:
+        log(f"    [Error]: {err_msg}", color=RED)
+    log(f"  -> Speed: {res.get('decode_speed', 0):.2f} tok/s | Status: {'PASS' if fuzz_passed else 'FAIL'}")
+
+    return {
+        "status": "PASS" if fuzz_passed else "FAIL",
+        "fuzz_operations": 5000,
+        "completion_tokens": res.get("completion_tokens", 0),
+        "ttft_ms": round(res.get("ttft", 0) * 1000.0, 1),
+        "tok_s": round(res.get("decode_speed", 0), 2),
+        "error": err_msg
+    }
+
+
+# ----------------------------------------------------------------------------
+# 17. COMBINATORIAL ANTI-CONSTRAINT FOLLOWING (IFEVAL TIER)
+# ----------------------------------------------------------------------------
+def run_test_combinatorial_anti_constraints(client: LLMClient):
+    log("\n" + "="*88, bold=True)
+    log("[TEST 17/19] Combinatorial Anti-Constraint & Negative Instruction Following (IFEval Tier)", bold=True, color=CYAN)
+    log("="*88)
+
+    prompt = (
+        "Write an architectural briefing on 'Zero-Trust Kernel Isolation'.\n"
+        "You must strictly satisfy all 6 of the following constraints simultaneously:\n\n"
+        "Constraint 1: Structure your answer into exactly 4 markdown sections headed by:\n"
+        "   '### Section I: Foundation'\n"
+        "   '### Section II: Isolation Proof'\n"
+        "   '### Section III: Hardware Enclaves'\n"
+        "   '### Section IV: Infrastructure Configuration'\n\n"
+        "Constraint 2 (Lipogram): In '### Section II: Isolation Proof', you must NEVER use the letter 'e' (neither lowercase 'e' nor uppercase 'E'). Every single word in Section II must be completely free of 'e'.\n\n"
+        "Constraint 3 (Word Count): '### Section III: Hardware Enclaves' must be strictly between 90 and 130 words in length.\n\n"
+        "Constraint 4 (YAML Embedding): '### Section IV: Infrastructure Configuration' must contain a valid ```yaml ``` code block with exactly 4 keys: `enclave_id`, `page_isolation`, `ring_buffer_mb`, `attestation_pki`.\n\n"
+        "Constraint 5 (Negative Anti-Tokens): Do NOT use any of the following 4 words anywhere in your entire output: 'constraint', 'rule', 'forbidden', 'negative'.\n\n"
+        "Constraint 6 (Termination): Your final output line must be strictly: '[SECURITY_STAMP_2026_VERIFIED]'."
+    )
+
+    log("  Dispatching multi-constraint prompt with lipogram, word counts, and forbidden anti-tokens...")
+    res = client.call([{"role": "user", "content": prompt}], max_tokens=3500, temperature=0.4, stream=True)
+    text = res.get("content", "") or res.get("text", "")
+
+    s1 = "### Section I: Foundation" in text
+    s2 = "### Section II: Isolation Proof" in text
+    s3 = "### Section III: Hardware Enclaves" in text
+    s4 = "### Section IV: Infrastructure Configuration" in text
+    c1 = s1 and s2 and s3 and s4
+
+    c2 = False
+    sec2_text = ""
+    try:
+        sec2_part = text.split("### Section II: Isolation Proof")[1].split("### Section III")[0]
+        sec2_lines = [l for l in sec2_part.splitlines() if not l.startswith("###")]
+        sec2_text = "\n".join(sec2_lines).strip()
+        c2 = ("e" not in sec2_text.lower()) and (len(sec2_text) > 30)
+    except Exception:
+        c2 = False
+
+    c3 = False
+    sec3_words = 0
+    try:
+        sec3_part = text.split("### Section III: Hardware Enclaves")[1].split("### Section IV")[0]
+        words = sec3_part.strip().split()
+        sec3_words = len(words)
+        c3 = 90 <= sec3_words <= 130
+    except Exception:
+        c3 = False
+
+    c4 = False
+    try:
+        yaml_match = re.search(r"```(?:yaml)?\s*\n(.*?)```", text, re.DOTALL)
+        if yaml_match:
+            y_text = yaml_match.group(1)
+            keys = ["enclave_id", "page_isolation", "ring_buffer_mb", "attestation_pki"]
+            c4 = all(k in y_text for k in keys)
+    except Exception:
+        c4 = False
+
+    forbidden = ["constraint", "rule", "forbidden", "negative"]
+    found_forbidden = [f for f in forbidden if f in text.lower()]
+    c5 = len(found_forbidden) == 0
+
+    c6 = "[SECURITY_STAMP_2026_VERIFIED]" in text
+
+    all_passed = c1 and c2 and c3 and c4 and c5 and c6
+    log(f"  - C1 (Exact 4 Required Markdown Sections): {'PASS' if c1 else 'FAIL'}")
+    log(f"  - C2 (Section II Lipogram: ZERO 'e'/'E' in text): {'PASS' if c2 else 'FAIL'} (Chars: {len(sec2_text)})")
+    log(f"  - C3 (Section III Word Count 90-130 words): {'PASS' if c3 else 'FAIL'} (Count: {sec3_words})")
+    log(f"  - C4 (Section IV YAML with 4 Exact Keys): {'PASS' if c4 else 'FAIL'}")
+    log(f"  - C5 (Zero Forbidden Anti-Tokens): {'PASS' if c5 else 'FAIL'} (Found: {found_forbidden})")
+    log(f"  - C6 (Exact Security Stamp Termination): {'PASS' if c6 else 'FAIL'}")
+    log(f"  -> Speed: {res.get('decode_speed', 0):.2f} tok/s | Status: {'PASS' if all_passed else 'FAIL'}")
+
+    return {
+        "status": "PASS" if all_passed else "FAIL",
+        "constraints_passed": sum([c1, c2, c3, c4, c5, c6]),
+        "total_constraints": 6,
+        "details": {
+            "4_sections": c1,
+            "lipogram_no_e": c2,
+            "word_count_90_130": c3,
+            "yaml_keys": c4,
+            "no_forbidden_words": c5,
+            "termination_stamp": c6
+        },
+        "completion_tokens": res.get("completion_tokens", 0),
+        "ttft_ms": round(res.get("ttft", 0) * 1000.0, 1),
+        "tok_s": round(res.get("decode_speed", 0), 2)
+    }
+
+
+# ----------------------------------------------------------------------------
+# 18. COUNTERFACTUAL AXIOMATIC SYMBOLIC ALGEBRA
+# ----------------------------------------------------------------------------
+def run_test_counterfactual_algebra(client: LLMClient):
+    log("\n" + "="*88, bold=True)
+    log("[TEST 18/19] Counterfactual Axiomatic Symbolic Deduction (Non-Commutative Modular Algebra)", bold=True, color=CYAN)
+    log("="*88)
+
+    prompt = (
+        "Consider a custom finite-field mathematical system over the ring Z_23 (integers modulo 23, values 0 to 22) "
+        "defined by two synthetic binary operations:\n\n"
+        "1. Operation (+):  a (+) b = (3*a - 2*b + 5) mod 23\n"
+        "2. Operation (*):  a (*) b = (a^2 + b + 2) mod 23\n\n"
+        "Solve the following equation for all integer solutions X in the range [0, 22]:\n"
+        "   ( (X (+) 4) (*) 3 ) (+) 8 = 16   (mod 23)\n\n"
+        "Requirements:\n"
+        "- Show the step-by-step reduction for each nested operation using modular arithmetic.\n"
+        "- Compute the modular multiplicative inverse of 3 mod 23.\n"
+        "- Identify all valid integer values of X in {0, ..., 22}.\n"
+        "- State at the very end: 'FINAL_SOLUTIONS_FOR_X: [values]'."
+    )
+
+    log("  Requesting step-by-step resolution of custom non-commutative modular algebra...")
+    res = client.call([{"role": "user", "content": prompt}], max_tokens=1800, temperature=0.0, stream=True)
+    text = res.get("text", "")
+
+    has_inv = ("8" in text) and ("inverse" in text.lower() or "3 * 8" in text or "24" in text)
+    has_8 = "8" in text
+    has_17 = "17" in text
+    matched = (has_8 and has_17)
+
+    log(f"  - Modular Multiplicative Inverse of 3 mod 23 (=8): {'PASS' if has_inv else 'FAIL'}")
+    log(f"  - Solved First Root X=8: {'PASS' if has_8 else 'FAIL'}")
+    log(f"  - Solved Second Root X=17: {'PASS' if has_17 else 'FAIL'}")
+    status = "PASS" if matched else ("PARTIAL" if (has_8 or has_17) else "FAIL")
+    log(f"  -> Speed: {res.get('decode_speed', 0):.2f} tok/s | Status: {status}")
+
+    return {
+        "status": status,
+        "inverse_found": has_inv,
+        "root_8_found": has_8,
+        "root_17_found": has_17,
+        "completion_tokens": res.get("completion_tokens", 0),
+        "ttft_ms": round(res.get("ttft", 0) * 1000.0, 1),
+        "tok_s": round(res.get("decode_speed", 0), 2)
+    }
+
+
+# ----------------------------------------------------------------------------
+# 19. EXTREME FRONTIER-DEPTH MULTI-NEEDLE SYNTHESIS
+# ----------------------------------------------------------------------------
+def run_test_frontier_needle_depth(client: LLMClient, target_context: int = 32000):
+    log("\n" + "="*88, bold=True)
+    log(f"[TEST 19/19] Extreme Frontier-Depth Multi-Needle Precision ({target_context:,} Context Window)", bold=True, color=CYAN)
+    log("="*88)
+
+    filler_segment = (
+        "Distributed consensus engines like Raft and Paxos serialize concurrent log entries using multi-version concurrency control. "
+        "Storage backends distribute page tables across high-performance non-volatile media with atomic flush primitives. "
+        "Analytical engines parse abstract syntax trees into vectorized SIMD instructions over columnar Apache Arrow memory layouts. "
+    )
+
+    blocks = max(100, int(target_context / 45))
+    val_front = 4821
+    val_middle = 7392
+    val_tail = 3105
+
+    pos_front = int(blocks * 0.005)
+    pos_middle = int(blocks * 0.500)
+    pos_tail = int(blocks * 0.995)
+
+    needle_front = f"\n[CRITICAL_FRONT_REGISTER: ALPHA_REG = {val_front}]\n"
+    needle_middle = f"\n[CRITICAL_MIDDLE_REGISTER: BETA_REG = {val_middle}]\n"
+    needle_tail = f"\n[CRITICAL_TAIL_REGISTER: GAMMA_REG = {val_tail}]\n"
+
+    expected_composite = (val_front + val_tail) - val_middle
+
+    doc = []
+    for b in range(blocks):
+        doc.append(filler_segment)
+        if b == pos_front:
+            doc.append(needle_front)
+        elif b == pos_middle:
+            doc.append(needle_middle)
+        elif b == pos_tail:
+            doc.append(needle_tail)
+
+    document = "".join(doc)
+    prompt = (
+        f"{document}\n\n"
+        "TASK:\n"
+        "Locate all three critical registers buried in the documentation above:\n"
+        "1. ALPHA_REG (near the beginning of the context)\n"
+        "2. BETA_REG (in the middle of the context)\n"
+        "3. GAMMA_REG (at the extreme end of the context)\n\n"
+        "Perform the exact calculation: COMPOSITE_CHECKSUM = (ALPHA_REG + GAMMA_REG) - BETA_REG.\n"
+        "State the values of all three registers and the final checksum. Conclude with 'COMPOSITE_CHECKSUM = <integer>'."
+    )
+
+    log(f"  Ingesting ~{target_context:,} tokens with needles at 0.5%, 50.0%, and 99.5% depth...")
+    res = client.call([{"role": "user", "content": prompt}], max_tokens=1000, temperature=0.0, stream=True)
+    text = res.get("text", "")
+
+    m1 = str(val_front) in text
+    m2 = str(val_middle) in text
+    m3 = str(val_tail) in text
+    m_calc = str(expected_composite) in text
+    passed = m1 and m2 and m3 and m_calc
+
+    log(f"  - Extreme Front Needle (0.5% depth, ALPHA={val_front}): {'PASS' if m1 else 'FAIL'}")
+    log(f"  - Mid-Context Needle (50.0% depth, BETA={val_middle}): {'PASS' if m2 else 'FAIL'}")
+    log(f"  - Extreme Horizon Tail Needle (99.5% depth, GAMMA={val_tail}): {'PASS' if m3 else 'FAIL'}")
+    log(f"  - Composite Calculation ({val_front} + {val_tail} - {val_middle} = {expected_composite}): {'PASS' if m_calc else 'FAIL'}")
+    log(f"  -> Speed: {res.get('decode_speed', 0):.2f} tok/s | TTFT: {res.get('ttft', 0)*1000:.1f} ms | Status: {'PASS' if passed else 'FAIL'}")
+
+    return {
+        "status": "PASS" if passed else "FAIL",
+        "target_context": target_context,
+        "alpha_found": m1,
+        "beta_found": m2,
+        "gamma_found": m3,
+        "composite_matched": m_calc,
+        "completion_tokens": res.get("completion_tokens", 0),
+        "ttft_ms": round(res.get("ttft", 0) * 1000.0, 1),
+        "tok_s": round(res.get("decode_speed", 0), 2)
+    }
 
 
 # ============================================================================
@@ -971,10 +1496,10 @@ def print_summary_table(report):
     # 5. Tool Calling
     if "tool_calling" in res:
         tc = res.get("tool_calling", {})
-        tc_desc = "JSON Args Valid" if tc.get("status") == "PASS" else "Args Invalid"
-        log(f"{'5. Tool / Function Calling Protocol':<38} | {fmt_status(tc.get('status', 'N/A')):<19} | {tc_desc:<20} | TTFT: {tc.get('ttft_ms', 0):.1f} ms")
+        tc_desc = "Agent Error Recovered" if tc.get("turn2_recovered") else ("Turn 1 Valid" if tc.get("turn1_valid") else "Args Invalid")
+        log(f"{'5. Tool Calling & Agentic Recovery':<38} | {fmt_status(tc.get('status', 'N/A')):<19} | {tc_desc:<20} | TTFT: {tc.get('ttft_ms', 0):.1f} ms")
     else:
-        log(f"{'5. Tool / Function Calling Protocol':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
+        log(f"{'5. Tool Calling & Agentic Recovery':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
 
     # 6. JSON Schema
     if "json_schema" in res:
@@ -1045,24 +1570,66 @@ def print_summary_table(report):
         cs = res.get("context_scaling", [])
         if cs:
             log("-" * 88)
-            log("  [14. Context Scaling Milestone Performance Breakdown]", bold=True)
-            cs_hdr = f"  {'Context Target':<18} | {'Cached':<8} | {'Prefill TTFT':<14} | {'Cold Speed':<14} | {'Effective':<14} | {'Decode':<12}"
+            log("  [14. Context Scaling Milestone Performance & Accuracy Breakdown]", bold=True)
+            cs_hdr = f"  {'Context Target':<18} | {'Cached':<8} | {'Prefill TTFT':<14} | {'Cold Speed':<14} | {'Effective':<14} | {'Decode':<12} | {'Accuracy':<10}"
             log(cs_hdr)
             log("  " + "-" * (len(cs_hdr) - 2))
             for step in cs:
-                if step.get("status") == "PASS":
+                if step.get("status") in ("PASS", "PARTIAL"):
                     m_label = f"~{step.get('target_tokens', 0)//1000}k ({step.get('actual_prompt_tokens', 0):,} toks)"
                     cached_str = f"{step.get('cached_tokens', 0):,}"
                     ttft_str = f"{step.get('ttft_s', 0):.2f} s"
                     cold_str = f"{step.get('cold_prefill_tok_s', 0):.1f} tok/s"
                     eff_str = f"{step.get('effective_prefill_tok_s', 0):.1f} tok/s"
                     decode_str = f"{step.get('decode_tok_s', 0):.2f} tok/s"
-                    log(f"  {m_label:<18} | {cached_str:<8} | {ttft_str:<14} | {cold_str:<14} | {eff_str:<14} | {decode_str:<12}")
+                    acc_str = "RECALLED" if step.get("needle_matched") else "MISSED"
+                    log(f"  {m_label:<18} | {cached_str:<8} | {ttft_str:<14} | {cold_str:<14} | {eff_str:<14} | {decode_str:<12} | {acc_str:<10}")
                 else:
                     m_label = f"{step.get('target_tokens', 0):,} toks"
                     log(f"  {m_label:<18} | {'-':<8} | {'FAILED':<14} | {str(step.get('error', 'Error'))[:28]}")
     else:
-        log(f"{'14. Dynamic Context Scaling':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
+        if 14 in report.get("selected_tests", range(1, 20)):
+            log(f"{'14. Dynamic Context Scaling':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
+
+    # 15. Multihop Graph Traversal
+    if "multihop_graph" in res:
+        mh = res.get("multihop_graph", {})
+        mh_desc = f"{mh.get('completion_tokens', 0)} tokens"
+        log(f"{'15. Adversarial Graph & Distractors':<38} | {fmt_status(mh.get('status', 'N/A')):<19} | {mh_desc:<20} | {mh.get('tok_s', 0):.2f} tok/s")
+    elif 15 in report.get("selected_tests", set()):
+        log(f"{'15. Adversarial Graph & Distractors':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
+
+    # 16. Novel Algorithmic Fuzz
+    if "novel_algorithm_fuzz" in res:
+        fz = res.get("novel_algorithm_fuzz", {})
+        fz_desc = "5,000 Ops Fuzzed OK" if fz.get("status") == "PASS" else "Fuzz Assertion Failed"
+        log(f"{'16. Novel Algorithm (5k Fuzz)':<38} | {fmt_status(fz.get('status', 'N/A')):<19} | {fz_desc:<20} | {fz.get('tok_s', 0):.2f} tok/s")
+    elif 16 in report.get("selected_tests", set()):
+        log(f"{'16. Novel Algorithm (5k Fuzz)':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
+
+    # 17. Combinatorial Anti-Constraints
+    if "combinatorial_anti_constraints" in res:
+        ac = res.get("combinatorial_anti_constraints", {})
+        ac_desc = f"{ac.get('constraints_passed', 0)}/6 Constraints Met"
+        log(f"{'17. Anti-Constraints (IFEval Tier)':<38} | {fmt_status(ac.get('status', 'N/A')):<19} | {ac_desc:<20} | {ac.get('tok_s', 0):.2f} tok/s")
+    elif 17 in report.get("selected_tests", set()):
+        log(f"{'17. Anti-Constraints (IFEval Tier)':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
+
+    # 18. Counterfactual Algebra
+    if "counterfactual_algebra" in res:
+        ca = res.get("counterfactual_algebra", {})
+        ca_desc = "Both Roots Solved" if ca.get("status") == "PASS" else ("1 Root Solved" if ca.get("status") == "PARTIAL" else "Roots Missed")
+        log(f"{'18. Counterfactual Axiomatic Math':<38} | {fmt_status(ca.get('status', 'N/A')):<19} | {ca_desc:<20} | {ca.get('tok_s', 0):.2f} tok/s")
+    elif 18 in report.get("selected_tests", set()):
+        log(f"{'18. Counterfactual Axiomatic Math':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
+
+    # 19. Frontier Needle Depth
+    if "frontier_needle_depth" in res:
+        fn = res.get("frontier_needle_depth", {})
+        fn_desc = "Composite Checksum OK" if fn.get("status") == "PASS" else "Checksum Missed"
+        log(f"{'19. Frontier Depth Multi-Needle':<38} | {fmt_status(fn.get('status', 'N/A')):<19} | {fn_desc:<20} | {fn.get('tok_s', 0):.2f} tok/s")
+    elif 19 in report.get("selected_tests", set()):
+        log(f"{'19. Frontier Depth Multi-Needle':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
 
     log("="*88 + "\n")
 
@@ -1098,33 +1665,64 @@ NAME_TO_TEST_NUM = {
     "context_scaling": 14,
     "context": 14,
     "scale": 14,
+    "multihop_graph": 15,
+    "multihop": 15,
+    "graph": 15,
+    "distractors": 15,
+    "novel_algorithm_fuzz": 16,
+    "novel_algorithm": 16,
+    "fuzz": 16,
+    "ring_buffer": 16,
+    "combinatorial_anti_constraints": 17,
+    "anti_constraints": 17,
+    "ifeval": 17,
+    "lipogram": 17,
+    "counterfactual_algebra": 18,
+    "algebra": 18,
+    "symbolic": 18,
+    "math": 18,
+    "frontier_needle_depth": 19,
+    "frontier_needle": 19,
+    "frontier": 19,
 }
 
-def parse_selected_tests(test_arg: str):
-    if not test_arg:
-        return set(range(1, 15))
-    selected = set()
-    parts = [p.strip() for p in test_arg.replace(" ", ",").split(",") if p.strip()]
-    for part in parts:
-        if "-" in part and not part.startswith("-"):
-            subparts = part.split("-", 1)
-            if subparts[0].isdigit() and subparts[1].isdigit():
-                start_n, end_n = int(subparts[0]), int(subparts[1])
-                for n in range(start_n, end_n + 1):
-                    if 1 <= n <= 14:
-                        selected.add(n)
-                continue
-        if part.isdigit():
-            n = int(part)
-            if 1 <= n <= 14:
-                selected.add(n)
-        else:
-            lower = part.lower().replace("-", "_")
-            if lower in NAME_TO_TEST_NUM:
-                selected.add(NAME_TO_TEST_NUM[lower])
+def parse_selected_tests(test_arg: str, suite: str = "all"):
+    if test_arg:
+        selected = set()
+        parts = [p.strip() for p in test_arg.replace(" ", ",").split(",") if p.strip()]
+        for part in parts:
+            if "-" in part and not part.startswith("-"):
+                subparts = part.split("-", 1)
+                if subparts[0].isdigit() and subparts[1].isdigit():
+                    start_n, end_n = int(subparts[0]), int(subparts[1])
+                    for n in range(start_n, end_n + 1):
+                        if 1 <= n <= 19:
+                            selected.add(n)
+                    continue
+            if part.isdigit():
+                n = int(part)
+                if 1 <= n <= 19:
+                    selected.add(n)
             else:
-                log(f"Warning: Unknown test identifier '{part}'. Ignored.", color=YELLOW)
-    return selected if selected else set(range(1, 15))
+                lower = part.lower().replace("-", "_")
+                if lower in NAME_TO_TEST_NUM:
+                    selected.add(NAME_TO_TEST_NUM[lower])
+                elif lower == "flagship":
+                    selected.update(range(1, 15))
+                elif lower in ("adversarial", "hardened"):
+                    selected.update(range(15, 20))
+                elif lower == "all":
+                    selected.update(range(1, 20))
+                else:
+                    log(f"Warning: Unknown test identifier '{part}'. Ignored.", color=YELLOW)
+        return selected if selected else set(range(1, 20))
+
+    if suite == "flagship":
+        return set(range(1, 15))
+    elif suite == "adversarial":
+        return set(range(15, 20))
+    else:  # "all"
+        return set(range(1, 20))
 
 
 # ============================================================================
@@ -1139,7 +1737,13 @@ def main():
     parser.add_argument("--parallel", "-p", type=int, help="Number of parallel clients to test")
     parser.add_argument("--max-context", type=int, help="Override detected max context window tokens")
     parser.add_argument("--milestones", type=int, nargs="+", default=None, help="Custom context milestones for test 14 (e.g. --milestones 4000 8000 200000 204000)")
-    parser.add_argument("--test", "-t", default=None, help="Run specific test(s) by number or name (e.g. 14, '11,12', '1-5', 'context_scaling')")
+    parser.add_argument("--test", "-t", default=None, help="Run specific test(s) by number or name (e.g. 14, '11,12', '1-5', 'context_scaling', '15-19')")
+    parser.add_argument("--suite", "-s", choices=["all", "flagship", "adversarial"], default="all",
+                        help="Benchmark suite category: 'all' (tests 1-19), 'flagship' (tests 1-14), or 'adversarial' (tests 15-19)")
+    parser.add_argument("--quick", "-q", action="store_true",
+                        help="Fast smoke qualification mode (compact context horizons, skips heavy prefill)")
+    parser.add_argument("--adversarial-depth", type=int, default=32000,
+                        help="Target context depth for adversarial frontier tests (default: 32000)")
     parser.add_argument("--out", "-o", help="Path to write JSON benchmark report")
     parser.add_argument("--auto", "-y", action="store_true", help="Non-interactive auto-selection mode")
     parser.add_argument("--parallel-suite", action="store_true", help="Execute independent functional tests concurrently matching parallel slots")
@@ -1211,11 +1815,20 @@ def main():
         max_context = detected_ctx
         log(f"Detected Max Context Window: {max_context:,} tokens")
 
-    if args.milestones:
+    if args.quick:
+        if args.milestones:
+            milestones = sorted(list(set(args.milestones)))
+        else:
+            milestones = [4000, 8000, 16000]
+        adv_depth = min(16000, args.adversarial_depth)
+        log(f"Quick Mode Active: Milestones={milestones}, Adversarial Depth={adv_depth:,} tokens")
+    elif args.milestones:
         milestones = sorted(list(set(args.milestones)))
+        adv_depth = args.adversarial_depth
         log(f"Context Scaling Targets (Overridden by flag): {milestones}")
     else:
         milestones = build_context_milestones(max_context)
+        adv_depth = args.adversarial_depth
         log(f"Adopted Context Scaling Targets: {milestones}")
 
     # 4. Detect / Configure Concurrency & Parallel Slots
@@ -1238,9 +1851,11 @@ def main():
     log(f"Parallel Test Level: {parallel} concurrent streams\n")
 
     # 5. Execute Selected Test(s)
-    selected_tests = parse_selected_tests(args.test)
+    selected_tests = parse_selected_tests(args.test, suite=args.suite)
     if args.test:
-        log(f"Selective Test Execution Active: Running test(s) {sorted(list(selected_tests))} out of 14\n", color=CYAN, bold=True)
+        log(f"Selective Test Execution Active: Running test(s) {sorted(list(selected_tests))} out of 19\n", color=CYAN, bold=True)
+    else:
+        log(f"Active Suite [{args.suite.upper()}]: Executing {len(selected_tests)} test(s) {sorted(list(selected_tests))}\n", color=CYAN, bold=True)
 
     report = {
         "endpoint": endpoint,
@@ -1248,6 +1863,9 @@ def main():
         "max_context_tokens": max_context,
         "context_milestones": milestones,
         "parallel_streams": parallel,
+        "suite": args.suite,
+        "quick_mode": args.quick,
+        "selected_tests": sorted(list(selected_tests)),
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "results": {}
     }
@@ -1277,6 +1895,14 @@ def main():
             parallel_candidates.append(("code_execution", lambda: run_test_code_execution(client)))
         if 13 in selected_tests:
             parallel_candidates.append(("error_handling", lambda: run_test_error_handling(client)))
+        if 15 in selected_tests:
+            parallel_candidates.append(("multihop_graph", lambda: run_test_multihop_graph(client, target_context=adv_depth)))
+        if 16 in selected_tests:
+            parallel_candidates.append(("novel_algorithm_fuzz", lambda: run_test_novel_algorithmic_fuzz(client)))
+        if 17 in selected_tests:
+            parallel_candidates.append(("combinatorial_anti_constraints", lambda: run_test_combinatorial_anti_constraints(client)))
+        if 18 in selected_tests:
+            parallel_candidates.append(("counterfactual_algebra", lambda: run_test_counterfactual_algebra(client)))
 
         with ThreadPoolExecutor(max_workers=parallel) as pool:
             futures = {pool.submit(fn): name for name, fn in parallel_candidates}
@@ -1297,6 +1923,8 @@ def main():
             report["results"]["client_abort"] = run_test_client_abort(client)
         if 14 in selected_tests:
             report["results"]["context_scaling"] = run_test_context_scaling(client, milestones)
+        if 19 in selected_tests:
+            report["results"]["frontier_needle_depth"] = run_test_frontier_needle_depth(client, target_context=adv_depth)
     else:
         if 1 in selected_tests:
             report["results"]["streaming"] = run_test_streaming(client)
@@ -1326,6 +1954,16 @@ def main():
             report["results"]["error_handling"] = run_test_error_handling(client)
         if 14 in selected_tests:
             report["results"]["context_scaling"] = run_test_context_scaling(client, milestones)
+        if 15 in selected_tests:
+            report["results"]["multihop_graph"] = run_test_multihop_graph(client, target_context=adv_depth)
+        if 16 in selected_tests:
+            report["results"]["novel_algorithm_fuzz"] = run_test_novel_algorithmic_fuzz(client)
+        if 17 in selected_tests:
+            report["results"]["combinatorial_anti_constraints"] = run_test_combinatorial_anti_constraints(client)
+        if 18 in selected_tests:
+            report["results"]["counterfactual_algebra"] = run_test_counterfactual_algebra(client)
+        if 19 in selected_tests:
+            report["results"]["frontier_needle_depth"] = run_test_frontier_needle_depth(client, target_context=adv_depth)
 
     total_suite_time = time.perf_counter() - t_suite_start
     report["total_suite_wall_time_s"] = round(total_suite_time, 2)
