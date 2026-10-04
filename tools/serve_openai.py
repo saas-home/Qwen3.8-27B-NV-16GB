@@ -75,14 +75,14 @@ DRAFT_DIR = "mtp"   # default drafting method: MTP head (no external draft model
 PORT = 8888
 MODEL_ID = "qwen3.8-27b-exl3-2.0bpw"
 
-DEFAULT_TEMPERATURE = float(os.environ.get("TEMPERATURE", 0.70))
-DEFAULT_TOP_P = float(os.environ.get("TOP_P", 0.90))
+DEFAULT_TEMPERATURE = float(os.environ.get("TEMPERATURE", 1.0))
+DEFAULT_TOP_P = float(os.environ.get("TOP_P", 0.95))
 DEFAULT_TOP_K = int(os.environ.get("TOP_K", 20))
-DEFAULT_MIN_P = float(os.environ.get("MIN_P", 0.08))
+DEFAULT_MIN_P = float(os.environ.get("MIN_P", 0.0))
 DEFAULT_PRESENCE_PENALTY = float(os.environ.get("PRESENCE_PENALTY", 0.0))
 DEFAULT_FREQUENCY_PENALTY = float(os.environ.get("FREQUENCY_PENALTY", 0.0))
 DEFAULT_REPETITION_PENALTY = float(os.environ.get("REPETITION_PENALTY", 1.0))
-DEFAULT_DRY_MULTIPLIER = float(os.environ.get("DRY_MULTIPLIER", 0.8))
+DEFAULT_DRY_MULTIPLIER = float(os.environ.get("DRY_MULTIPLIER", 0.0))
 DEFAULT_DRY_BASE = float(os.environ.get("DRY_BASE", 1.75))
 DEFAULT_DRY_ALLOWED_LENGTH = int(os.environ.get("DRY_ALLOWED_LENGTH", 4))
 DEFAULT_DRY_RANGE = int(os.environ.get("DRY_RANGE", 0))
@@ -1495,7 +1495,7 @@ def main():
     ap.add_argument("--top_k", type = int, default = int(os.environ.get("TOP_K", DEFAULT_TOP_K)),
                     help = "default sampling top_k when omitted in requests (default: 20)")
     ap.add_argument("--min_p", type = float, default = float(os.environ.get("MIN_P", DEFAULT_MIN_P)),
-                    help = "default sampling min_p when omitted in requests (default: 0.08)")
+                    help = "default sampling min_p when omitted in requests (default: 0.0; disabled)")
     ap.add_argument("--presence_penalty", type = float, default = float(os.environ.get("PRESENCE_PENALTY", DEFAULT_PRESENCE_PENALTY)),
                     help = "default presence_penalty when omitted in requests (default: 0.0)")
     ap.add_argument("--frequency_penalty", type = float, default = float(os.environ.get("FREQUENCY_PENALTY", DEFAULT_FREQUENCY_PENALTY)),
@@ -1503,7 +1503,7 @@ def main():
     ap.add_argument("--repetition_penalty", type = float, default = float(os.environ.get("REPETITION_PENALTY", DEFAULT_REPETITION_PENALTY)),
                     help = "default repetition_penalty when omitted in requests (default: 1.00)")
     ap.add_argument("--dry_multiplier", type = float, default = float(os.environ.get("DRY_MULTIPLIER", DEFAULT_DRY_MULTIPLIER)),
-                    help = "default DRY repetition penalty multiplier (default: 0.8; 0.0 to disable)")
+                    help = "default DRY repetition penalty multiplier (default: 0.0; disabled)")
     ap.add_argument("--dry_base", type = float, default = float(os.environ.get("DRY_BASE", DEFAULT_DRY_BASE)),
                     help = "default DRY penalty base (default: 1.75)")
     ap.add_argument("--dry_allowed_length", type = int, default = int(os.environ.get("DRY_ALLOWED_LENGTH", DEFAULT_DRY_ALLOWED_LENGTH)),
