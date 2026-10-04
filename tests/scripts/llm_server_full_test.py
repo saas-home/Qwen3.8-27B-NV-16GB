@@ -14,7 +14,7 @@ Key Capabilities:
   - Evaluates Prefix Caching (RadixAttention / prompt cache reuse) cold vs warm speedup.
   - Client disconnection & socket abort resilience (verifies GPU slot release).
   - Multi-client continuous batching throughput & queueing behavior.
-  - Full 14-stage evaluation with terminal summary scorecard and JSON export.
+  - Full 22-stage evaluation with terminal summary scorecard and JSON export.
 """
 
 import sys
@@ -27,7 +27,6 @@ import urllib.request
 import urllib.error
 import socket
 import argparse
-import tempfile
 import subprocess
 import uuid
 from urllib.parse import urlparse
@@ -257,8 +256,30 @@ def build_context_milestones(max_context: int, max_ratio: float = 0.80):
     return sorted(list(set(milestones)))
 
 
+TOTAL_TESTS = 22
+
+
+def extract_python_code(raw_content: str, prefer_class: str = None) -> str:
+    """Robustly extracts python code from assistant responses, handling markdown fences and edge cases."""
+    blocks = re.findall(r"```(?:python)?\s*\n(.*?)```", raw_content, re.DOTALL | re.IGNORECASE)
+    code = ""
+    if blocks:
+        if prefer_class:
+            filtered = [b for b in blocks if prefer_class in b]
+            code = max(filtered, key=len).strip() if filtered else max(blocks, key=len).strip()
+        else:
+            code = max(blocks, key=len).strip()
+    else:
+        m = re.search(r"```(?:python)?\s*\n(.*)", raw_content, re.DOTALL | re.IGNORECASE)
+        code = m.group(1).strip() if m else raw_content.strip()
+        code = re.sub(r"```\s*$", "", code).strip()
+
+    # Strip any stray markdown code fence lines to guarantee valid Python syntax
+    return "\n".join(line for line in code.splitlines() if not line.strip().startswith("```")).strip()
+
+
 # ============================================================================
-# 14 ENTERPRISE EVALUATION TEST SUITES
+# 22 ENTERPRISE EVALUATION TEST SUITES
 # ============================================================================
 
 # ----------------------------------------------------------------------------
@@ -266,7 +287,7 @@ def build_context_milestones(max_context: int, max_ratio: float = 0.80):
 # ----------------------------------------------------------------------------
 def run_test_streaming(client: LLMClient):
     log("\n" + "="*88, bold=True)
-    log("[TEST 1/14] Streaming Verification & TTFT Latency", bold=True, color=CYAN)
+    log("[TEST 1/22] Streaming Verification & TTFT Latency", bold=True, color=CYAN)
     log("="*88)
     prompt = "Explain the fundamental difference between synchronous and asynchronous microservice communication in two concise sentences."
     res = client.call([{"role": "user", "content": prompt}], max_tokens=150, stream=True)
@@ -286,7 +307,7 @@ def run_test_streaming(client: LLMClient):
 # ----------------------------------------------------------------------------
 def run_test_vision(client: LLMClient):
     log("\n" + "="*88, bold=True)
-    log("[TEST 2/14] Multimodal Vision Evaluation (Invoice Document Parsing)", bold=True, color=CYAN)
+    log("[TEST 2/22] Multimodal Vision Evaluation (Invoice Document Parsing)", bold=True, color=CYAN)
     log("="*88)
     if not os.path.exists(IMAGE_PATH):
         log(f"  Skipping: Image asset not found at {IMAGE_PATH}", color=YELLOW)
@@ -326,7 +347,7 @@ def run_test_vision(client: LLMClient):
 # ----------------------------------------------------------------------------
 def run_test_concurrency(client: LLMClient, parallel: int):
     log("\n" + "="*88, bold=True)
-    log(f"[TEST 3/14] Multi-Client Concurrency & Batching Stress Test (Parallel = {parallel})", bold=True, color=CYAN)
+    log(f"[TEST 3/22] Multi-Client Concurrency & Batching Stress Test (Parallel = {parallel})", bold=True, color=CYAN)
     log("="*88)
     
     results = {}
@@ -369,7 +390,7 @@ def run_test_concurrency(client: LLMClient, parallel: int):
 # ----------------------------------------------------------------------------
 def run_test_capabilities(client: LLMClient):
     log("\n" + "="*88, bold=True)
-    log("[TEST 4/14] Enterprise Architecture & Engineering 4-Task Suite", bold=True, color=CYAN)
+    log("[TEST 4/22] Enterprise Architecture & Engineering 4-Task Suite", bold=True, color=CYAN)
     log("="*88)
     tasks = [
         ("task1_avl_tree", "AVL Tree with Rotations", "Write a complete self-balancing AVL Tree in Python with insert, delete, search, in-order iterator, and test function.", 1200),
@@ -401,7 +422,7 @@ def run_test_capabilities(client: LLMClient):
 # ----------------------------------------------------------------------------
 def run_test_tool_calling(client: LLMClient):
     log("\n" + "="*88, bold=True)
-    log("[TEST 5/14] Multi-Turn Agent Loop & Autonomous Error Recovery Protocol", bold=True, color=CYAN)
+    log("[TEST 5/22] Multi-Turn Agent Loop & Autonomous Error Recovery Protocol", bold=True, color=CYAN)
     log("="*88)
     
     tools = [
@@ -515,7 +536,7 @@ def run_test_tool_calling(client: LLMClient):
 # ----------------------------------------------------------------------------
 def run_test_json_schema(client: LLMClient):
     log("\n" + "="*88, bold=True)
-    log("[TEST 6/14] Strict JSON Schema & Constrained Decoding (response_format)", bold=True, color=CYAN)
+    log("[TEST 6/22] Strict JSON Schema & Constrained Decoding (response_format)", bold=True, color=CYAN)
     log("="*88)
     
     prompt = (
@@ -555,6 +576,7 @@ def run_test_json_schema(client: LLMClient):
             "status": status,
             "valid_json": valid_json,
             "valid_schema": valid_schema,
+            "completion_tokens": res.get("completion_tokens", 0),
             "ttft_ms": round(res.get("ttft", 0) * 1000, 1),
             "tok_s": round(res.get("decode_speed", 0), 2)
         }
@@ -567,7 +589,7 @@ def run_test_json_schema(client: LLMClient):
 # ----------------------------------------------------------------------------
 def run_test_prefix_caching(client: LLMClient):
     log("\n" + "="*88, bold=True)
-    log("[TEST 7/14] Prefix Caching / KV Cache Reuse Verification (Cold vs Warm)", bold=True, color=CYAN)
+    log("[TEST 7/22] Prefix Caching / KV Cache Reuse Verification (Cold vs Warm)", bold=True, color=CYAN)
     log("="*88)
     
     shared_system_spec = (
@@ -621,7 +643,7 @@ def run_test_prefix_caching(client: LLMClient):
 # ----------------------------------------------------------------------------
 def run_test_client_abort(client: LLMClient):
     log("\n" + "="*88, bold=True)
-    log("[TEST 8/14] Client Socket Abort & Slot Recovery Resilience", bold=True, color=CYAN)
+    log("[TEST 8/22] Client Socket Abort & Slot Recovery Resilience", bold=True, color=CYAN)
     log("="*88)
     
     payload = {
@@ -671,7 +693,7 @@ def run_test_client_abort(client: LLMClient):
 # ----------------------------------------------------------------------------
 def run_test_stop_sequences(client: LLMClient):
     log("\n" + "="*88, bold=True)
-    log("[TEST 9/14] Stop Sequence Compliance & Deterministic Sampling (temp=0.0)", bold=True, color=CYAN)
+    log("[TEST 9/22] Stop Sequence Compliance & Deterministic Sampling (temp=0.0)", bold=True, color=CYAN)
     log("="*88)
     
     stop_words = ["HALT_GENERATION", "###STOP###"]
@@ -696,7 +718,10 @@ def run_test_stop_sequences(client: LLMClient):
     return {
         "status": status,
         "stop_sequence_respected": halt_stopped,
-        "deterministic_greedy_reproducible": deterministic
+        "deterministic_greedy_reproducible": deterministic,
+        "completion_tokens": res.get("completion_tokens", 0),
+        "ttft_ms": round(res.get("ttft", 0) * 1000, 1),
+        "tok_s": round(res.get("decode_speed", 0), 2)
     }
 
 # ----------------------------------------------------------------------------
@@ -704,7 +729,7 @@ def run_test_stop_sequences(client: LLMClient):
 # ----------------------------------------------------------------------------
 def run_test_high_entropy(client: LLMClient):
     log("\n" + "="*88, bold=True)
-    log("[TEST 10/14] High-Entropy Associative Key-Value Recall", bold=True, color=CYAN)
+    log("[TEST 10/22] High-Entropy Associative Key-Value Recall", bold=True, color=CYAN)
     log("="*88)
     filler = "In high-performance distributed architectures, nodes communicate via low-latency RPC protocols with strict SLAs. " * 300
     kv_data = (
@@ -732,6 +757,7 @@ def run_test_high_entropy(client: LLMClient):
         "matches": {"KEY_BETA_99": m1, "KEY_GAMMA_12": m2},
         "model_tail": response_tail[:200],
         "response_excerpt": content[-300:].strip() if len(content) > 300 else content.strip(),
+        "completion_tokens": res.get("completion_tokens", 0),
         "ttft_ms": round(res["ttft"] * 1000, 1),
         "tok_s": round(res["decode_speed"], 2)
     }
@@ -741,7 +767,7 @@ def run_test_high_entropy(client: LLMClient):
 # ----------------------------------------------------------------------------
 def run_test_extreme_precision(client: LLMClient):
     log("\n" + "="*88, bold=True)
-    log("[TEST 11/14] Extreme Precision Arithmetic & Financial Ledger Reconciliation", bold=True, color=CYAN)
+    log("[TEST 11/22] Extreme Precision Arithmetic & Financial Ledger Reconciliation", bold=True, color=CYAN)
     log("="*88)
     stages = [
         ("Stage 1", "Initial balance = 10000.00"),
@@ -781,6 +807,7 @@ def run_test_extreme_precision(client: LLMClient):
         "expected": expected,
         "matched": matched,
         "model_tail": response_tail[:200],
+        "completion_tokens": res.get("completion_tokens", 0),
         "ttft_ms": round(res["ttft"] * 1000, 1),
         "tok_s": round(res["decode_speed"], 2)
     }
@@ -790,7 +817,7 @@ def run_test_extreme_precision(client: LLMClient):
 # ----------------------------------------------------------------------------
 def run_test_code_execution(client: LLMClient):
     log("\n" + "="*88, bold=True)
-    log("[TEST 12/14] Executable Algorithmic Code Generation & Dynamic Verification", bold=True, color=CYAN)
+    log("[TEST 12/22] Executable Algorithmic Code Generation & Dynamic Verification", bold=True, color=CYAN)
     log("="*88)
     prompt = (
         "Write a complete, self-contained Python implementation of an LRU Cache.\n"
@@ -802,24 +829,13 @@ def run_test_code_execution(client: LLMClient):
     )
     # Increase max_tokens to 2048 to prevent reasoning + code generation from being cut off
     res = client.call([{"role": "user", "content": prompt}], max_tokens=2048, stream=True)
-    raw_content = res.get("content", "")
-
-    # Robust regex code block extraction (prioritizing class LRUCache over draft snippets in reasoning)
-    blocks = re.findall(r"```(?:python)?\s*\n(.*?)```", raw_content, re.DOTALL | re.IGNORECASE)
-    code = ""
-    if blocks:
-        lru_blocks = [b for b in blocks if "class LRUCache" in b]
-        code = max(lru_blocks, key=len).strip() if lru_blocks else max(blocks, key=len).strip()
-    else:
-        # Fallback for unclosed code block if model was cut off or omitted closing tag
-        m = re.search(r"```(?:python)?\s*\n(.*)", raw_content, re.DOTALL | re.IGNORECASE)
-        code = m.group(1).strip() if m else raw_content.strip()
+    raw_content = res.get("content", "") or res.get("text", "")
+    code = extract_python_code(raw_content, prefer_class="class LRUCache")
 
     # Prepend standard collections imports to prevent spurious NameError if model uses OrderedDict
     import_preamble = "from collections import OrderedDict, defaultdict\nimport sys\n\n"
 
     test_harness = """
-
 # Test harness execution
 cache = LRUCache(2)
 cache.put(1, 1)
@@ -834,20 +850,15 @@ assert cache.get(4) == 4, "Failed get 4"
 print("UNIT_TESTS_PASSED")
 """
     full_code = import_preamble + code + "\n" + test_harness
-    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
-        f.write(full_code)
-        f_path = f.name
-
+    passed = False
+    err = ""
     try:
-        sub = subprocess.run([sys.executable, f_path], capture_output=True, text=True, timeout=15)
+        sub = subprocess.run([sys.executable, "-c", full_code], capture_output=True, text=True, timeout=15)
         passed = "UNIT_TESTS_PASSED" in sub.stdout
         err = sub.stderr.strip() if sub.stderr.strip() else sub.stdout.strip()
     except Exception as e:
         passed = False
         err = str(e)
-    finally:
-        if os.path.exists(f_path):
-            os.remove(f_path)
 
     status = "PASS" if passed else "FAIL"
     log(f"  -> Dynamic Execution Assertions: {status} {'(All tests passed)' if passed else f'Error: {err[:150]}'}")
@@ -856,6 +867,8 @@ print("UNIT_TESTS_PASSED")
         "status": status,
         "dynamic_tests_passed": passed,
         "error": err if not passed else "",
+        "completion_tokens": res.get("completion_tokens", 0),
+        "ttft_ms": round(res.get("ttft", 0) * 1000, 1),
         "tok_s": round(res["decode_speed"], 2)
     }
 
@@ -864,7 +877,7 @@ print("UNIT_TESTS_PASSED")
 # ----------------------------------------------------------------------------
 def run_test_error_handling(client: LLMClient):
     log("\n" + "="*88, bold=True)
-    log("[TEST 13/14] Error Envelope & Boundary API Protocol Compliance", bold=True, color=CYAN)
+    log("[TEST 13/22] Error Envelope & Boundary API Protocol Compliance", bold=True, color=CYAN)
     log("="*88)
     
     # Check 1: Missing messages field
@@ -913,7 +926,7 @@ def run_test_error_handling(client: LLMClient):
 # ----------------------------------------------------------------------------
 def run_test_context_scaling(client: LLMClient, milestones: list):
     log("\n" + "="*88, bold=True)
-    log("[TEST 14/14] Dynamic Long-Context Prefill, Decode & Semantic Accuracy", bold=True, color=CYAN)
+    log("[TEST 14/22] Dynamic Long-Context Prefill, Decode & Semantic Accuracy", bold=True, color=CYAN)
     log(f"Target Milestones: {milestones}")
     log("="*88)
 
@@ -1001,7 +1014,7 @@ def run_test_context_scaling(client: LLMClient, milestones: list):
 # ----------------------------------------------------------------------------
 def run_test_multihop_graph(client: LLMClient, target_context: int = 32000):
     log("\n" + "="*88, bold=True)
-    log(f"[TEST 15/19] Adversarial Multi-Hop Graph Traversal with Deprecated Distractors (~{target_context//1000}k)", bold=True, color=CYAN)
+    log(f"[TEST 15/22] Adversarial Multi-Hop Graph Traversal with Deprecated Distractors (~{target_context//1000}k)", bold=True, color=CYAN)
     log("="*88)
 
     filler_chunk = (
@@ -1088,7 +1101,7 @@ def run_test_multihop_graph(client: LLMClient, target_context: int = 32000):
 # ----------------------------------------------------------------------------
 def run_test_novel_algorithmic_fuzz(client: LLMClient):
     log("\n" + "="*88, bold=True)
-    log("[TEST 16/19] Novel Algorithmic Synthesis & Automated 5,000-Op Property Fuzz Testing", bold=True, color=CYAN)
+    log("[TEST 16/22] Novel Algorithmic Synthesis & Automated 5,000-Op Property Fuzz Testing", bold=True, color=CYAN)
     log("="*88)
 
     prompt = (
@@ -1106,20 +1119,10 @@ def run_test_novel_algorithmic_fuzz(client: LLMClient):
         "Keep comments and docstrings concise to emit complete implementation code."
     )
 
-    log("  Requesting synthesis of non-standard Monotonic Ring Buffer (max_tokens=3500)...")
+    log("  Requesting synthesis of non-standard Monotonic Ring Buffer (max_tokens=4500)...")
     res = client.call([{"role": "user", "content": prompt}], max_tokens=4500, temperature=0.2, stream=True)
     raw = res.get("content", "") or res.get("text", "")
-
-    code_match = re.findall(r"```(?:python)?\s*\n(.*?)```", raw, re.DOTALL | re.IGNORECASE)
-    if code_match:
-        code = max(code_match, key=len).strip()
-    else:
-        # Fallback if closing tag was omitted or truncated
-        m = re.search(r"```(?:python)?\s*\n(.*)", raw, re.DOTALL | re.IGNORECASE)
-        code = m.group(1).strip() if m else raw.strip()
-        code = re.sub(r"```\s*$", "", code).strip()
-    # Strip any stray markdown code fence lines to guarantee valid Python syntax
-    code = "\n".join(line for line in code.splitlines() if not line.strip().startswith("```")).strip()
+    code = extract_python_code(raw, prefer_class="class ConcurrentMonotonicRingBuffer")
 
     fuzz_harness = """
 import sys
@@ -1188,22 +1191,15 @@ if __name__ == "__main__":
     run_fuzz_verification()
 """
     full_script = code + "\n\n" + fuzz_harness
-    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
-        f.write(full_script)
-        temp_path = f.name
-
     fuzz_passed = False
     err_msg = ""
     try:
-        proc = subprocess.run([sys.executable, temp_path], capture_output=True, text=True, timeout=25)
+        proc = subprocess.run([sys.executable, "-c", full_script], capture_output=True, text=True, timeout=25)
         fuzz_passed = ("ALL_5000_FUZZ_TESTS_PASSED" in proc.stdout) and (proc.returncode == 0)
         if not fuzz_passed:
             err_msg = (proc.stderr or proc.stdout).strip()[:300]
     except Exception as e:
         err_msg = str(e)
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
 
     log(f"  - Automated 5,000 Operations Fuzz Assertions: {'PASS' if fuzz_passed else 'FAIL'}")
     if not fuzz_passed and err_msg:
@@ -1225,7 +1221,7 @@ if __name__ == "__main__":
 # ----------------------------------------------------------------------------
 def run_test_combinatorial_anti_constraints(client: LLMClient):
     log("\n" + "="*88, bold=True)
-    log("[TEST 17/19] Combinatorial Anti-Constraint & Negative Instruction Following (IFEval Tier)", bold=True, color=CYAN)
+    log("[TEST 17/22] Combinatorial Anti-Constraint & Negative Instruction Following (IFEval Tier)", bold=True, color=CYAN)
     log("="*88)
 
     prompt = (
@@ -1284,7 +1280,7 @@ def run_test_combinatorial_anti_constraints(client: LLMClient):
         c4 = False
 
     forbidden = ["constraint", "rule", "forbidden", "negative"]
-    found_forbidden = [f for f in forbidden if f in text.lower()]
+    found_forbidden = [f for f in forbidden if re.search(r"\b" + f + r"s?\b", text, re.IGNORECASE)]
     c5 = len(found_forbidden) == 0
 
     c6 = "[SECURITY_STAMP_2026_VERIFIED]" in text
@@ -1321,7 +1317,7 @@ def run_test_combinatorial_anti_constraints(client: LLMClient):
 # ----------------------------------------------------------------------------
 def run_test_counterfactual_algebra(client: LLMClient):
     log("\n" + "="*88, bold=True)
-    log("[TEST 18/19] Counterfactual Axiomatic Symbolic Deduction (Non-Commutative Modular Algebra)", bold=True, color=CYAN)
+    log("[TEST 18/22] Counterfactual Axiomatic Symbolic Deduction (Non-Commutative Modular Algebra)", bold=True, color=CYAN)
     log("="*88)
 
     prompt = (
@@ -1339,12 +1335,12 @@ def run_test_counterfactual_algebra(client: LLMClient):
     )
 
     log("  Requesting step-by-step resolution of custom non-commutative modular algebra...")
-    res = client.call([{"role": "user", "content": prompt}], max_tokens=1800, temperature=0.0, stream=True)
-    text = res.get("text", "")
+    res = client.call([{"role": "user", "content": prompt}], max_tokens=3500, temperature=0.0, stream=True)
+    text = res.get("content", "") or res.get("text", "")
 
-    has_inv = ("8" in text) and ("inverse" in text.lower() or "3 * 8" in text or "24" in text)
-    has_8 = "8" in text
-    has_17 = "17" in text
+    has_inv = bool(re.search(r"inverse.*(?:3.*=.*8|8\b)", text, re.IGNORECASE) or ("3·8" in text) or ("3 * 8" in text) or ("24" in text and "8" in text))
+    has_8 = bool(re.search(r"(?:X\s*=\s*8\b|\[\s*8\b|\b8\s*,\s*17\b|\b17\s*,\s*8\b|roots?.*8)", text, re.IGNORECASE))
+    has_17 = bool(re.search(r"(?:X\s*=\s*17\b|17\s*\]|\b8\s*,\s*17\b|\b17\s*,\s*8\b|roots?.*17)", text, re.IGNORECASE))
     matched = (has_8 and has_17)
 
     log(f"  - Modular Multiplicative Inverse of 3 mod 23 (=8): {'PASS' if has_inv else 'FAIL'}")
@@ -1369,7 +1365,7 @@ def run_test_counterfactual_algebra(client: LLMClient):
 # ----------------------------------------------------------------------------
 def run_test_frontier_needle_depth(client: LLMClient, target_context: int = 32000):
     log("\n" + "="*88, bold=True)
-    log(f"[TEST 19/19] Extreme Frontier-Depth Multi-Needle Precision ({target_context:,} Context Window)", bold=True, color=CYAN)
+    log(f"[TEST 19/22] Extreme Frontier-Depth Multi-Needle Precision ({target_context:,} Context Window)", bold=True, color=CYAN)
     log("="*88)
 
     filler_segment = (
@@ -1475,14 +1471,14 @@ def run_test_cruxeval_execution(client: LLMClient):
     )
 
     log("  Dispatching CruxEval mental execution prompt with bitwise and stateful accumulator...")
-    res = client.call([{"role": "user", "content": prompt}], max_tokens=2500, temperature=0.0, stream=True)
+    res = client.call([{"role": "user", "content": prompt}], max_tokens=4000, temperature=0.0, stream=True)
     text = res.get("content", "") or res.get("text", "")
 
     expected_output = [14, 12, 4, 21, 6, 29, 24, 41]
     expected_str = "[14, 12, 4, 21, 6, 29, 24, 41]"
 
-    compact_text = text.replace(" ", "")
-    compact_expected = expected_str.replace(" ", "")
+    compact_text = re.sub(r"\s+", "", text)
+    compact_expected = "[14,12,4,21,6,29,24,41]"
     matched = (compact_expected in compact_text) or ("14, 12, 4, 21, 6, 29, 24, 41" in text)
     if not matched:
         m = re.findall(r"\[\s*14\s*,\s*12\s*,\s*4\s*,\s*21\s*,\s*6\s*,\s*29\s*,\s*24\s*,\s*41\s*\]", text)
@@ -1550,18 +1546,12 @@ def run_test_swe_bench_bug_patch(client: LLMClient):
     log("  Dispatching bug patching challenge with code, failing test, and runtime traceback...")
     res = client.call([{"role": "user", "content": prompt}], max_tokens=3000, temperature=0.0, stream=True)
     raw = res.get("content", "") or res.get("text", "")
-
-    code_match = re.findall(r"```(?:python)?\s*\n(.*?)```", raw, re.DOTALL | re.IGNORECASE)
-    if code_match:
-        code = max(code_match, key=len).strip()
-    else:
-        m = re.search(r"```(?:python)?\s*\n(.*)", raw, re.DOTALL | re.IGNORECASE)
-        code = m.group(1).strip() if m else raw.strip()
-        code = re.sub(r"```\s*$", "", code).strip()
-    code = "\n".join(line for line in code.splitlines() if not line.strip().startswith("```")).strip()
+    code = extract_python_code(raw, prefer_class="class TokenBucketRateLimiter")
 
     test_harness = f"""
 import sys
+import time
+import math
 
 {code}
 
@@ -1633,13 +1623,19 @@ def run_test_aime_olympiad_math(client: LLMClient):
     )
 
     log("  Dispatching AIME modular arithmetic & Chinese Remainder Theorem problem...")
-    res = client.call([{"role": "user", "content": prompt}], max_tokens=3500, temperature=0.0, stream=True)
+    res = client.call([{"role": "user", "content": prompt}], max_tokens=6000, temperature=0.0, stream=True)
     text = res.get("content", "") or res.get("text", "")
 
     # Ground truth: 978 (17^2026 + 13^2026 mod 1000 = 978)
-    has_978 = ("978" in text)
-    strict_match = bool(re.search(r"ANSWER:\s*978\b", text, re.IGNORECASE))
-    matched = strict_match or has_978
+    answer_match = re.search(r"ANSWER:\s*(?:\\boxed\{)?(\d+)\}?", text, re.IGNORECASE)
+    boxed_match = re.search(r"\\boxed\{\s*(\d+)\s*\}", text)
+    if answer_match:
+        matched = (answer_match.group(1).strip() == "978")
+    elif boxed_match:
+        matched = (boxed_match.group(1).strip() == "978")
+    else:
+        strict_concl = bool(re.search(r"(?:remainder|result|answer|sum|S\s*=\s*|S\s*\\equiv\s*|is)\s*(?:is|:|=|\\equiv)?\s*(?:\\boxed\{)?978\b", text, re.IGNORECASE))
+        matched = strict_concl or ("978" in text)
 
     log(f"  - Olympiad Modular Deduction (S mod 1000 = 978): {'PASS' if matched else 'FAIL'}")
     log(f"  -> Speed: {res.get('decode_speed', 0):.2f} tok/s | TTFT: {res.get('ttft', 0)*1000:.1f} ms | Status: {'PASS' if matched else 'FAIL'}")
@@ -1651,6 +1647,192 @@ def run_test_aime_olympiad_math(client: LLMClient):
         "completion_tokens": res.get("completion_tokens", 0),
         "ttft_ms": round(res.get("ttft", 0) * 1000.0, 1),
         "tok_s": round(res.get("decode_speed", 0), 2)
+    }
+
+
+# ============================================================================
+# STANDARDIZED TEST CATALOG & METRIC EXTRACTORS
+# ============================================================================
+
+TEST_CATALOG = [
+    (1, "streaming", "Streaming & Latency"),
+    (2, "vision", "Multimodal Vision (Invoice)"),
+    (3, "concurrency", "Parallel Batching"),
+    (4, "capabilities_4tasks", "4-Task Architecture Suite"),
+    (5, "tool_calling", "Tool Calling & Agentic Recovery"),
+    (6, "json_schema", "JSON Schema Mode (response_format)"),
+    (7, "prefix_caching", "Prefix / KV Cache Reuse"),
+    (8, "client_abort", "Client Socket Abort Recovery"),
+    (9, "stop_sequences", "Stop Words & Greedy Sampling"),
+    (10, "high_entropy_recall", "High-Entropy Key-Value Recall"),
+    (11, "extreme_precision", "Precision Ledger Reconcile"),
+    (12, "code_execution", "Dynamic Code Unit Testing"),
+    (13, "error_handling", "API Error Protocol Compliance"),
+    (14, "context_scaling", "Dynamic Context Scaling"),
+    (15, "multihop_graph", "Adversarial Graph & Distractors"),
+    (16, "novel_algorithm_fuzz", "Novel Algorithm (5k Fuzz)"),
+    (17, "combinatorial_anti_constraints", "Anti-Constraints (IFEval Tier)"),
+    (18, "counterfactual_algebra", "Counterfactual Axiomatic Math"),
+    (19, "frontier_needle_depth", "Frontier Depth Multi-Needle"),
+    (20, "cruxeval", "CruxEval (Mental Code Exec)"),
+    (21, "swe_bench_bug_patch", "SWE-bench (Traceback Fix)"),
+    (22, "aime_olympiad", "AIME Olympiad (Math Reasoning)"),
+]
+
+
+def extract_test_metrics(test_key: str, data):
+    """Extracts standardized metrics (status, tokens, tok_s, ttft_ms, score, desc) from any test result."""
+    if not data or not isinstance(data, (dict, list)):
+        return {"status": "SKIPPED", "tokens": 0, "tok_s": 0.0, "ttft_ms": 0.0, "score": 0.0, "desc": "-"}
+
+    if isinstance(data, list):
+        if not data:
+            return {"status": "SKIPPED", "tokens": 0, "tok_s": 0.0, "ttft_ms": 0.0, "score": 0.0, "desc": "-"}
+        passed = sum(1 for s in data if s.get("status") == "PASS")
+        partial = sum(1 for s in data if s.get("status") == "PARTIAL")
+        st = "PASS" if passed == len(data) else ("PARTIAL" if (passed + partial) > 0 else "FAIL")
+        tot_tokens = sum(s.get("completion_tokens", 0) for s in data)
+        speeds = [s.get("decode_tok_s", 0) for s in data if s.get("decode_tok_s")]
+        avg_speed = sum(speeds) / len(speeds) if speeds else 0.0
+        ttfts = [s.get("ttft_s", 0) * 1000.0 for s in data if s.get("ttft_s")]
+        avg_ttft = sum(ttfts) / len(ttfts) if ttfts else 0.0
+        score = (passed + 0.5 * partial) / len(data)
+        desc = f"{passed}/{len(data)} Milestones OK"
+        return {"status": st, "tokens": tot_tokens, "tok_s": round(avg_speed, 2), "ttft_ms": round(avg_ttft, 1), "score": score, "desc": desc}
+
+    if test_key == "concurrency":
+        levels = list(data.values())
+        if not levels:
+            return {"status": "SKIPPED", "tokens": 0, "tok_s": 0.0, "ttft_ms": 0.0, "score": 0.0, "desc": "-"}
+        all_passed = all("PASS" in l.get("status", "") for l in levels)
+        st = "PASS" if all_passed else "FAIL"
+        tot_tokens = sum(l.get("total_tokens", 0) for l in levels)
+        max_agg = max(l.get("aggregate_tok_s", 0) for l in levels)
+        score = 1.0 if all_passed else 0.0
+        desc = f"Max Agg: {max_agg:.1f} tok/s"
+        return {"status": st, "tokens": tot_tokens, "tok_s": round(max_agg, 2), "ttft_ms": 0.0, "score": score, "desc": desc}
+
+    if test_key == "capabilities_4tasks":
+        tasks = data.get("tasks", [])
+        tot_tokens = sum(t.get("tokens", 0) for t in tasks)
+        avg_speed = data.get("average_speed_tok_s", 0.0)
+        ttfts = [t.get("ttft_ms", 0) for t in tasks if t.get("ttft_ms")]
+        avg_ttft = sum(ttfts) / len(ttfts) if ttfts else 0.0
+        st = data.get("status", "PASS")
+        score = 1.0 if st == "PASS" else 0.0
+        desc = f"{len(tasks)}/4 Tasks OK"
+        return {"status": st, "tokens": tot_tokens, "tok_s": round(avg_speed, 2), "ttft_ms": round(avg_ttft, 1), "score": score, "desc": desc}
+
+    st = data.get("status", "N/A")
+    tokens = data.get("completion_tokens", 0) or data.get("tokens", 0)
+    tok_s = data.get("tok_s", 0.0) or data.get("decode_speed", 0.0)
+    ttft_ms = data.get("ttft_ms", 0.0) or (data.get("ttft", 0.0) * 1000.0)
+    score = 1.0 if "PASS" in st else (0.5 if "PARTIAL" in st else 0.0)
+
+    desc = "-"
+    if test_key == "prefix_caching":
+        ratio = data.get("speedup_ratio", 1.0)
+        desc = f"{ratio:.1f}x Cache Speedup"
+    elif test_key == "tool_calling":
+        desc = "Agent Error Recovered" if data.get("turn2_recovered") else ("Turn 1 Valid" if data.get("turn1_valid") else "Failed")
+    elif test_key == "json_schema":
+        desc = "Strict Schema Conformed" if data.get("valid_schema") else "Schema Invalid"
+    elif test_key == "combinatorial_anti_constraints":
+        cp = data.get("constraints_passed", 0)
+        desc = f"{cp}/6 Constraints"
+        score = cp / 6.0
+    elif test_key == "counterfactual_algebra":
+        desc = "Roots [8, 17] Solved" if st == "PASS" else "Roots Missed"
+    elif test_key == "cruxeval":
+        desc = "State Traversed OK" if st == "PASS" else "State Diverged"
+    elif test_key == "swe_bench_bug_patch":
+        desc = "Regression Tests OK" if st == "PASS" else "Unit Tests Failed"
+    elif test_key == "aime_olympiad":
+        desc = "Exact Modular Root" if st == "PASS" else "Arithmetic Missed"
+    elif test_key == "novel_algorithm_fuzz":
+        desc = "5,000 Ops Fuzzed OK" if st == "PASS" else "Fuzz Error"
+    elif test_key == "extreme_precision":
+        desc = "Exact Matched" if data.get("matched") else "Balance Diverged"
+    elif test_key == "high_entropy_recall":
+        desc = "Keys Recalled" if st == "PASS" else "Key Missed"
+    elif test_key == "client_abort":
+        desc = f"Rec: {data.get('recovery_latency_ms', 0):.0f}ms"
+    elif test_key == "stop_sequences":
+        desc = "Deterministic (temp=0)" if data.get("deterministic_greedy_reproducible") else "Stops Active"
+    elif test_key == "code_execution":
+        desc = "Dynamic Assertions OK" if data.get("dynamic_tests_passed") else "Assertions Failed"
+    elif test_key == "error_handling":
+        desc = "HTTP 400/422 Standard" if data.get("bad_schema_rejected") else "Handled"
+
+    return {
+        "status": st,
+        "tokens": int(tokens),
+        "tok_s": round(tok_s, 2),
+        "ttft_ms": round(ttft_ms, 1),
+        "score": score,
+        "desc": desc
+    }
+
+
+def compute_executive_summary(report: dict) -> dict:
+    results = report.get("results", {})
+    evaluated = 0
+    passed = 0
+    partial = 0
+    failed = 0
+    total_tokens = 0
+    passed_tokens = 0
+    speeds = []
+    ttfts = []
+
+    for _, test_key, _ in TEST_CATALOG:
+        if test_key not in results:
+            continue
+        data = results[test_key]
+        m = extract_test_metrics(test_key, data)
+        if m["status"] == "SKIPPED":
+            continue
+        evaluated += 1
+        if "PASS" in m["status"]:
+            passed += 1
+            passed_tokens += m["tokens"]
+        elif "PARTIAL" in m["status"]:
+            partial += 1
+            passed_tokens += int(m["tokens"] * 0.5)
+        else:
+            failed += 1
+
+        total_tokens += m["tokens"]
+        if m["tok_s"] > 0:
+            speeds.append(m["tok_s"])
+        if m["ttft_ms"] > 0:
+            ttfts.append(m["ttft_ms"])
+
+    pass_rate_pct = ((passed + 0.5 * partial) / evaluated * 100.0) if evaluated > 0 else 0.0
+    avg_tokens_per_test = (total_tokens / evaluated) if evaluated > 0 else 0.0
+    avg_tokens_per_passed = (passed_tokens / (passed + 0.5 * partial)) if (passed + partial) > 0 else 0.0
+    avg_speed = (sum(speeds) / len(speeds)) if speeds else 0.0
+    avg_ttft = (sum(ttfts) / len(ttfts)) if ttfts else 0.0
+    wall_time = report.get("total_suite_wall_time_s", 0.0)
+
+    token_conciseness_factor = min(2.0, max(0.2, 1000.0 / (avg_tokens_per_passed if avg_tokens_per_passed > 0 else 1000.0)))
+    efficiency_index = round((pass_rate_pct * 0.6) + (min(100.0, avg_speed * 1.5) * 0.25) + (token_conciseness_factor * 15.0), 1)
+
+    return {
+        "model": report.get("model", "unknown"),
+        "endpoint": report.get("endpoint", "unknown"),
+        "total_evaluated": evaluated,
+        "passed": passed,
+        "partial": partial,
+        "failed": failed,
+        "effectiveness_rate_pct": round(pass_rate_pct, 1),
+        "total_tokens_emitted": total_tokens,
+        "token_economy_tokens_per_passed_task": round(avg_tokens_per_passed, 1),
+        "avg_tokens_per_test": round(avg_tokens_per_test, 1),
+        "avg_decode_tok_s": round(avg_speed, 2),
+        "avg_ttft_ms": round(avg_ttft, 1),
+        "total_wall_time_s": round(wall_time, 2),
+        "efficiency_index": efficiency_index
     }
 
 
@@ -1813,7 +1995,7 @@ def print_summary_table(report):
                     m_label = f"{step.get('target_tokens', 0):,} toks"
                     log(f"  {m_label:<18} | {'-':<8} | {'FAILED':<14} | {str(step.get('error', 'Error'))[:28]}")
     else:
-        if 14 in report.get("selected_tests", range(1, 20)):
+        if 14 in report.get("selected_tests", range(1, TOTAL_TESTS + 1)):
             log(f"{'14. Dynamic Context Scaling':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
 
     # 15. Multihop Graph Traversal
@@ -1881,6 +2063,270 @@ def print_summary_table(report):
         log(f"{'22. AIME Olympiad (Math Reasoning)':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
 
     log("="*88 + "\n")
+
+    # Executive Efficiency & Effectiveness Scorecard
+    summary = compute_executive_summary(report)
+    report["summary"] = summary
+
+    log("="*88, bold=True)
+    log("             EXECUTIVE EFFICIENCY & EFFECTIVENESS SCORECARD                             ", bold=True, color=CYAN)
+    log("="*88, bold=True)
+    log(f"  Model Under Test        : {summary['model']}")
+    log(f"  Effectiveness (Pass@1)  : {summary['passed']}/{summary['total_evaluated']} Passed ({summary['effectiveness_rate_pct']}%)")
+    log(f"  Total Solution Tokens   : {summary['total_tokens_emitted']:,} tokens consumed")
+    log(f"  Token Economy           : {summary['token_economy_tokens_per_passed_task']:.1f} tokens/passed victory (Solution conciseness)")
+    log(f"  Mean Decode Throughput  : {summary['avg_decode_tok_s']:.2f} tok/s")
+    log(f"  Mean Prefill TTFT       : {summary['avg_ttft_ms']:.1f} ms")
+    log(f"  Total Benchmark Time    : {summary['total_wall_time_s']:.2f} s")
+    log(f"  Composite Efficiency Idx: {summary['efficiency_index']:.1f} / 100.0")
+    log("="*88 + "\n", bold=True)
+
+
+def compare_benchmark_reports(file_paths: list, output_markdown: str = None):
+    """Compares two or more JSON benchmark reports head-to-head for efficiency and effectiveness."""
+    if len(file_paths) < 2:
+        log("Error: --compare requires at least two JSON benchmark report paths.", color=RED)
+        sys.exit(1)
+
+    reports = []
+    summaries = []
+    for fp in file_paths:
+        if not os.path.exists(fp):
+            log(f"Error: Report file not found: {fp}", color=RED)
+            sys.exit(1)
+        try:
+            with open(fp, "r") as f:
+                data = json.load(f)
+                reports.append(data)
+                summaries.append(compute_executive_summary(data))
+        except Exception as e:
+            log(f"Error reading {fp}: {e}", color=RED)
+            sys.exit(1)
+
+    log("\n" + "="*100, bold=True)
+    log("          CROSS-MODEL HEAD-TO-HEAD EFFICIENCY & EFFECTIVENESS BENCHMARK REPORT          ", bold=True, color=CYAN)
+    log("="*100, bold=True)
+
+    m1, m2 = summaries[0], summaries[1]
+    name1 = f"{m1['model']} ({m1['endpoint']})"
+    name2 = f"{m2['model']} ({m2['endpoint']})"
+
+    log(f"  Model A : {name1}", bold=True)
+    log(f"  Model B : {name2}\n", bold=True)
+
+    exec_hdr = f"{'Core Performance Metric':<35} | {'Model A (' + str(m1['model'])[:16] + ')':<26} | {'Model B (' + str(m2['model'])[:16] + ')':<26} | {'Advantage'}"
+    log(exec_hdr, bold=True)
+    log("-" * 100)
+
+    # 1. Effectiveness
+    eff_a = m1['effectiveness_rate_pct']
+    eff_b = m2['effectiveness_rate_pct']
+    diff_eff = eff_a - eff_b
+    if diff_eff > 0:
+        adv_eff = f"Model A (+{diff_eff:.1f}%)"
+    elif diff_eff < 0:
+        adv_eff = f"Model B (+{-diff_eff:.1f}%)"
+    else:
+        adv_eff = "Equal"
+    pass_a_str = f"{m1['passed']}/{m1['total_evaluated']} ({eff_a:.1f}%)"
+    pass_b_str = f"{m2['passed']}/{m2['total_evaluated']} ({eff_b:.1f}%)"
+    log(f"{'Effectiveness (Pass Rate)':<35} | {pass_a_str:<26} | {pass_b_str:<26} | {adv_eff}")
+
+    # 2. Token Economy
+    te_a = m1['token_economy_tokens_per_passed_task']
+    te_b = m2['token_economy_tokens_per_passed_task']
+    if te_a > 0 and te_b > 0:
+        if te_a < te_b:
+            ratio = te_b / te_a
+            pct = ((te_b - te_a) / te_b) * 100
+            adv_te = f"Model A ({pct:.1f}% fewer toks, {ratio:.2f}x conciseness)"
+        elif te_b < te_a:
+            ratio = te_a / te_b
+            pct = ((te_a - te_b) / te_a) * 100
+            adv_te = f"Model B ({pct:.1f}% fewer toks, {ratio:.2f}x conciseness)"
+        else:
+            adv_te = "Equal"
+    else:
+        adv_te = "-"
+    te_a_str = f"{te_a:.1f} tokens/task"
+    te_b_str = f"{te_b:.1f} tokens/task"
+    log(f"{'Token Economy (Tokens/Victory)':<35} | {te_a_str:<26} | {te_b_str:<26} | {adv_te}")
+
+    # 3. Total Tokens Emitted
+    tot_a = m1['total_tokens_emitted']
+    tot_b = m2['total_tokens_emitted']
+    adv_tot = f"Model A ({tot_b - tot_a:,} fewer tokens)" if tot_a < tot_b else (f"Model B ({tot_a - tot_b:,} fewer tokens)" if tot_b < tot_a else "Equal")
+    tot_a_str = f"{tot_a:,} tokens"
+    tot_b_str = f"{tot_b:,} tokens"
+    log(f"{'Total Solution Tokens Consumed':<35} | {tot_a_str:<26} | {tot_b_str:<26} | {adv_tot}")
+
+    # 4. Generation Speed
+    spd_a = m1['avg_decode_tok_s']
+    spd_b = m2['avg_decode_tok_s']
+    if spd_a > 0 and spd_b > 0:
+        if spd_a > spd_b:
+            diff_spd = ((spd_a - spd_b) / spd_b) * 100
+            adv_spd = f"Model A (+{diff_spd:.1f}% faster)"
+        elif spd_b > spd_a:
+            diff_spd = ((spd_b - spd_a) / spd_a) * 100
+            adv_spd = f"Model B (+{diff_spd:.1f}% faster)"
+        else:
+            adv_spd = "Equal"
+    else:
+        adv_spd = "-"
+    spd_a_str = f"{spd_a:.2f} tok/s"
+    spd_b_str = f"{spd_b:.2f} tok/s"
+    log(f"{'Mean Decode Speed (Throughput)':<35} | {spd_a_str:<26} | {spd_b_str:<26} | {adv_spd}")
+
+    # 5. First Token Latency (TTFT)
+    ttft_a = m1['avg_ttft_ms']
+    ttft_b = m2['avg_ttft_ms']
+    if ttft_a > 0 and ttft_b > 0:
+        if ttft_a < ttft_b:
+            adv_ttft = f"Model A ({ttft_b / ttft_a:.2f}x lower latency)"
+        elif ttft_b < ttft_a:
+            adv_ttft = f"Model B ({ttft_a / ttft_b:.2f}x lower latency)"
+        else:
+            adv_ttft = "Equal"
+    else:
+        adv_ttft = "-"
+    ttft_a_str = f"{ttft_a:.1f} ms"
+    ttft_b_str = f"{ttft_b:.1f} ms"
+    log(f"{'Mean Time-To-First-Token (TTFT)':<35} | {ttft_a_str:<26} | {ttft_b_str:<26} | {adv_ttft}")
+
+    # 6. Total Wall Clock Time
+    wall_a = m1['total_wall_time_s']
+    wall_b = m2['total_wall_time_s']
+    adv_wall = f"Model A ({wall_b - wall_a:.1f}s faster)" if wall_a < wall_b else (f"Model B ({wall_a - wall_b:.1f}s faster)" if wall_b < wall_a else "Equal")
+    wall_a_str = f"{wall_a:.2f} s"
+    wall_b_str = f"{wall_b:.2f} s"
+    log(f"{'Total Benchmark Suite Time':<35} | {wall_a_str:<26} | {wall_b_str:<26} | {adv_wall}")
+
+    # 7. Composite Efficiency Index
+    ei_a = m1['efficiency_index']
+    ei_b = m2['efficiency_index']
+    adv_ei = f"Model A (+{ei_a - ei_b:.1f} pts)" if ei_a > ei_b else (f"Model B (+{ei_b - ei_a:.1f} pts)" if ei_b > ei_a else "Equal")
+    ei_a_str = f"{ei_a:.1f} / 100"
+    ei_b_str = f"{ei_b:.1f} / 100"
+    log(f"{'Composite Efficiency Index':<35} | {ei_a_str:<26} | {ei_b_str:<26} | {adv_ei}")
+    log("="*100)
+
+    # Detailed Domain Matrix
+    log("\n" + "="*100, bold=True)
+    log("                          DOMAIN-BY-DOMAIN HEAD-TO-HEAD MATRIX                                ", bold=True, color=CYAN)
+    log("="*100, bold=True)
+    dom_hdr = f"{'Domain':<32} | {'Model A (' + str(m1['model'])[:12] + ')':<26} | {'Model B (' + str(m2['model'])[:12] + ')':<26} | {'Outcome / Advantage'}"
+    log(dom_hdr, bold=True)
+    log("-" * 100)
+
+    res_a = reports[0].get("results", {})
+    res_b = reports[1].get("results", {})
+    table_rows = []
+
+    for num, key, name in TEST_CATALOG:
+        da = extract_test_metrics(key, res_a.get(key))
+        db = extract_test_metrics(key, res_b.get(key))
+
+        if da["status"] == "SKIPPED" and db["status"] == "SKIPPED":
+            continue
+
+        label = f"{num}. {name[:28]}"
+        sa_str = f"{da['status']} ({da['tokens']}t | {da['tok_s']}t/s)" if da["status"] != "SKIPPED" else "SKIPPED"
+        sb_str = f"{db['status']} ({db['tokens']}t | {db['tok_s']}t/s)" if db["status"] != "SKIPPED" else "SKIPPED"
+
+        adv = "-"
+        if "PASS" in da["status"] and "PASS" not in db["status"]:
+            adv = "Model A Victory"
+        elif "PASS" in db["status"] and "PASS" not in da["status"]:
+            adv = "Model B Victory"
+        elif "PASS" in da["status"] and "PASS" in db["status"]:
+            if da["tokens"] > 0 and db["tokens"] > 0:
+                if da["tokens"] < db["tokens"]:
+                    ratio = db["tokens"] / da["tokens"]
+                    adv = f"Model A ({ratio:.1f}x fewer tokens)"
+                elif db["tokens"] < da["tokens"]:
+                    ratio = da["tokens"] / db["tokens"]
+                    adv = f"Model B ({ratio:.1f}x fewer tokens)"
+                else:
+                    adv = "Tied"
+            else:
+                adv = "Both Passed"
+        elif "FAIL" in da["status"] and "FAIL" in db["status"]:
+            adv = "Both Failed"
+
+        log(f"{label:<32} | {sa_str:<26} | {sb_str:<26} | {adv}")
+        table_rows.append((num, name, da, db, adv))
+
+    log("="*100)
+
+    # Executive Verdict
+    log("\n" + "="*100, bold=True)
+    log("                                  EXECUTIVE VERDICT                                     ", bold=True, color=GREEN)
+    log("="*100, bold=True)
+    if eff_a > eff_b and te_a <= te_b:
+        verdict = f"MODEL A ({m1['model']}) DOMINATES: Delivers superior effectiveness (+{diff_eff:.1f}%) while maintaining higher token economy ({te_a:.1f} vs {te_b:.1f} tokens/task)."
+    elif eff_b > eff_a and te_b <= te_a:
+        verdict = f"MODEL B ({m2['model']}) DOMINATES: Delivers superior effectiveness (+{-diff_eff:.1f}%) while maintaining higher token economy ({te_b:.1f} vs {te_a:.1f} tokens/task)."
+    elif eff_a > eff_b:
+        verdict = f"MODEL A ({m1['model']}) is MORE EFFECTIVE (+{diff_eff:.1f}% accuracy), while Model B had token economy of {te_b:.1f} tokens/task."
+    elif eff_b > eff_a:
+        verdict = f"MODEL B ({m2['model']}) is MORE EFFECTIVE (+{-diff_eff:.1f}% accuracy), while Model A had token economy of {te_a:.1f} tokens/task."
+    else:
+        verdict = f"Both models achieved IDENTICAL effectiveness ({eff_a:.1f}%). Model A speed: {spd_a:.1f} tok/s vs Model B speed: {spd_b:.1f} tok/s."
+
+    log(f"  {verdict}\n", bold=True)
+    log("="*100 + "\n")
+
+    # Generate Markdown Report
+    safe_a = re.sub(r"[^\w\-]", "_", str(m1["model"]))
+    safe_b = re.sub(r"[^\w\-]", "_", str(m2["model"]))
+    md_file = output_markdown or os.path.join(DEFAULT_RESULTS_DIR, f"comparison_{safe_a}_vs_{safe_b}_{time.strftime('%Y%m%d_%H%M%S')}.md")
+    md_dir = os.path.dirname(md_file)
+    if md_dir:
+        os.makedirs(md_dir, exist_ok=True)
+
+    md_lines = [
+        "# Cross-Model Head-to-Head Efficiency & Effectiveness Benchmark Report",
+        "",
+        f"- **Date Generated**: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"- **Model A**: `{name1}`",
+        f"- **Model B**: `{name2}`",
+        "",
+        "## Executive Summary & Efficiency Index",
+        "",
+        "| Metric / Dimension | Model A (`" + str(m1['model']) + "`) | Model B (`" + str(m2['model']) + "`) | Relative Advantage |",
+        "|:---|:---|:---|:---|",
+        f"| **Effectiveness (Accuracy)** | `{m1['passed']}/{m1['total_evaluated']} ({eff_a:.1f}%)` | `{m2['passed']}/{m2['total_evaluated']} ({eff_b:.1f}%)` | **{adv_eff}** |",
+        f"| **Token Economy (Solution Conciseness)** | `{te_a:.1f} tokens/task` | `{te_b:.1f} tokens/task` | **{adv_te}** |",
+        f"| **Total Solution Tokens Consumed** | `{tot_a:,} tokens` | `{tot_b:,} tokens` | **{adv_tot}** |",
+        f"| **Mean Decode Throughput** | `{spd_a:.2f} tok/s` | `{spd_b:.2f} tok/s` | **{adv_spd}** |",
+        f"| **Mean Time-to-First-Token (TTFT)** | `{ttft_a:.1f} ms` | `{ttft_b:.1f} ms` | **{adv_ttft}** |",
+        f"| **Total Benchmark Wall Time** | `{wall_a:.2f} s` | `{wall_b:.2f} s` | **{adv_wall}** |",
+        f"| **Composite Efficiency Index** | `{ei_a:.1f} / 100` | `{ei_b:.1f} / 100` | **{adv_ei}** |",
+        "",
+        "## Domain-by-Domain Comparison Matrix",
+        "",
+        "| Stage | Evaluation Domain | Model A (`" + str(m1['model']) + "`) | Model B (`" + str(m2['model']) + "`) | Outcome / Advantage |",
+        "|:---|:---|:---|:---|:---|",
+    ]
+
+    for num, name, da, db, adv in table_rows:
+        sa_str = f"{da['status']} ({da['tokens']}t, {da['tok_s']}t/s)" if da["status"] != "SKIPPED" else "SKIPPED"
+        sb_str = f"{db['status']} ({db['tokens']}t, {db['tok_s']}t/s)" if db["status"] != "SKIPPED" else "SKIPPED"
+        md_lines.append(f"| {num} | {name} | {sa_str} | {sb_str} | **{adv}** |")
+
+    md_lines.extend([
+        "",
+        "## Strategic Verdict & Deployment Recommendation",
+        "",
+        f"> **Executive Verdict**: {verdict}",
+        ""
+    ])
+
+    with open(md_file, "w") as f:
+        f.write("\n".join(md_lines))
+
+    log(f"  Markdown Benchmark Comparison Saved: {md_file}\n", color=GREEN, bold=True)
 
 
 NAME_TO_TEST_NUM = {
@@ -2011,7 +2457,15 @@ def main():
     parser.add_argument("--out", "-o", help="Path to write JSON benchmark report")
     parser.add_argument("--auto", "-y", action="store_true", help="Non-interactive auto-selection mode")
     parser.add_argument("--parallel-suite", action="store_true", help="Execute independent functional tests concurrently matching parallel slots")
+    parser.add_argument("--compare", nargs="+", default=None,
+                        help="Compare two or more JSON benchmark reports head-to-head for efficiency and effectiveness (e.g. --compare results/eval_modelA.json results/eval_modelB.json)")
+    parser.add_argument("--compare-out", default=None,
+                        help="Optional markdown path to export the cross-model comparison report")
     args = parser.parse_args()
+
+    if args.compare:
+        compare_benchmark_reports(args.compare, output_markdown=args.compare_out)
+        return
 
     log("\n" + "="*88, bold=True)
     log(" ENTERPRISE LLM SERVER FULL BENCHMARK & EVALUATION SUITE ", bold=True, color=GREEN)
@@ -2118,7 +2572,7 @@ def main():
     # 5. Execute Selected Test(s)
     selected_tests = parse_selected_tests(args.test, suite=args.suite)
     if args.test:
-        log(f"Selective Test Execution Active: Running test(s) {sorted(list(selected_tests))} out of 19\n", color=CYAN, bold=True)
+        log(f"Selective Test Execution Active: Running test(s) {sorted(list(selected_tests))} out of {TOTAL_TESTS}\n", color=CYAN, bold=True)
     else:
         log(f"Active Suite [{args.suite.upper()}]: Executing {len(selected_tests)} test(s) {sorted(list(selected_tests))}\n", color=CYAN, bold=True)
 
@@ -2246,6 +2700,7 @@ def main():
     report["total_suite_wall_time_s"] = round(total_suite_time, 2)
 
     # 6. Save JSON Report
+    report["summary"] = compute_executive_summary(report)
     parsed_host = urlparse(endpoint).netloc.replace(":", "_") or "local"
     out_file = args.out or os.path.join(DEFAULT_RESULTS_DIR, f"enterprise_eval_{parsed_host}_{time.strftime('%Y%m%d_%H%M%S')}.json")
     out_dir = os.path.dirname(out_file)
