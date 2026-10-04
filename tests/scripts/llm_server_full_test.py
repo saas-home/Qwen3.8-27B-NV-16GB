@@ -1444,6 +1444,216 @@ def run_test_frontier_needle_depth(client: LLMClient, target_context: int = 3200
     }
 
 
+# ----------------------------------------------------------------------------
+# 20. CRUXEVAL: COGNITIVE CODE EXECUTION & STATE SIMULATION
+# ----------------------------------------------------------------------------
+def run_test_cruxeval_execution(client: LLMClient):
+    log("\n" + "="*88, bold=True)
+    log("[TEST 20/22] CruxEval: Mental Code Execution & Program State Simulation", bold=True, color=CYAN)
+    log("="*88)
+
+    prompt = (
+        "TASK: Mentally trace the execution of the following Python function step-by-step.\n"
+        "Do NOT write replacement code. Determine the exact return value for the invocation shown below.\n\n"
+        "```python\n"
+        "def transform_stream(data, key_mask):\n"
+        "    res = []\n"
+        "    acc = 0\n"
+        "    for idx, item in enumerate(data):\n"
+        "        if (idx ^ key_mask) % 2 == 0:\n"
+        "            val = (item * 3 + idx) % 17\n"
+        "            acc = (acc + val) ^ (idx << 1)\n"
+        "            res.append(acc & 0xFF)\n"
+        "        else:\n"
+        "            res.append((item ^ acc) & 0x7F)\n"
+        "    return res\n\n"
+        "data_input = [14, 27, 8, 41, 19, 33, 5, 52]\n"
+        "mask = 5\n"
+        "result = transform_stream(data_input, mask)\n"
+        "```\n\n"
+        "Conclude your response strictly with: 'OUTPUT: <python list>'."
+    )
+
+    log("  Dispatching CruxEval mental execution prompt with bitwise and stateful accumulator...")
+    res = client.call([{"role": "user", "content": prompt}], max_tokens=2500, temperature=0.0, stream=True)
+    text = res.get("content", "") or res.get("text", "")
+
+    expected_output = [14, 12, 4, 21, 6, 29, 24, 41]
+    expected_str = "[14, 12, 4, 21, 6, 29, 24, 41]"
+
+    compact_text = text.replace(" ", "")
+    compact_expected = expected_str.replace(" ", "")
+    matched = (compact_expected in compact_text) or ("14, 12, 4, 21, 6, 29, 24, 41" in text)
+    if not matched:
+        m = re.findall(r"\[\s*14\s*,\s*12\s*,\s*4\s*,\s*21\s*,\s*6\s*,\s*29\s*,\s*24\s*,\s*41\s*\]", text)
+        matched = bool(m)
+
+    log(f"  - Mental Execution State Accuracy: {'PASS' if matched else 'FAIL'}")
+    log(f"  - Ground Truth Target: {expected_str}")
+    log(f"  -> Speed: {res.get('decode_speed', 0):.2f} tok/s | TTFT: {res.get('ttft', 0)*1000:.1f} ms | Status: {'PASS' if matched else 'FAIL'}")
+
+    return {
+        "status": "PASS" if matched else "FAIL",
+        "expected_output": expected_output,
+        "matched": matched,
+        "completion_tokens": res.get("completion_tokens", 0),
+        "ttft_ms": round(res.get("ttft", 0) * 1000.0, 1),
+        "tok_s": round(res.get("decode_speed", 0), 2)
+    }
+
+
+# ----------------------------------------------------------------------------
+# 21. SWE-BENCH: AUTONOMOUS BUG PATCHING FROM RUNTIME STACK TRACE
+# ----------------------------------------------------------------------------
+def run_test_swe_bench_bug_patch(client: LLMClient):
+    log("\n" + "="*88, bold=True)
+    log("[TEST 21/22] SWE-bench: Autonomous Bug Patching from Stack Trace & Failing Tests", bold=True, color=CYAN)
+    log("="*88)
+
+    prompt = (
+        "You are debugging an enterprise Python distributed rate limiting library.\n"
+        "A critical regression occurred where token accumulation is lost under rejected requests.\n\n"
+        "Here is the buggy implementation:\n"
+        "```python\n"
+        "class TokenBucketRateLimiter:\n"
+        "    \"\"\"Token Bucket rate limiter for managing API request limits.\"\"\"\n"
+        "    def __init__(self, capacity: float, refill_rate_per_sec: float):\n"
+        "        self.capacity = float(capacity)\n"
+        "        self.tokens = float(capacity)\n"
+        "        self.refill_rate = float(refill_rate_per_sec)\n"
+        "        self.last_refill = None\n\n"
+        "    def consume(self, now: float, tokens: float = 1.0) -> bool:\n"
+        "        if self.last_refill is None:\n"
+        "            self.last_refill = now\n"
+        "        elapsed = now - self.last_refill\n"
+        "        # BUG: Fails to accumulate tokens prior to checking availability\n"
+        "        if self.tokens >= tokens:\n"
+        "            self.tokens = min(self.capacity, self.tokens + elapsed * self.refill_rate) - tokens\n"
+        "            self.last_refill = now\n"
+        "            return True\n"
+        "        self.last_refill = now\n"
+        "        return False\n"
+        "```\n\n"
+        "Here is the failing test case and stack trace:\n"
+        "```text\n"
+        "Traceback (most recent call last):\n"
+        "  File \"test_rate_limiter.py\", line 42, in test_recovery_from_starvation\n"
+        "    assert limiter.consume(1.0, 2.0) is True, f\"Tokens lost during failed poll; expected 2.0 tokens, got {limiter.tokens}\"\n"
+        "AssertionError: Tokens lost during failed poll; expected 2.0 tokens, got 1.0\n"
+        "```\n\n"
+        "TASK:\n"
+        "1. Diagnose the root cause of the bug.\n"
+        "2. Provide the complete, fixed `TokenBucketRateLimiter` class enclosed in a ```python ``` code block.\n"
+        "Ensure clock skew protection (`elapsed = max(0.0, ...)`), full capacity capping, and correct token accrual before deduction."
+    )
+
+    log("  Dispatching bug patching challenge with code, failing test, and runtime traceback...")
+    res = client.call([{"role": "user", "content": prompt}], max_tokens=3000, temperature=0.0, stream=True)
+    raw = res.get("content", "") or res.get("text", "")
+
+    code_match = re.findall(r"```(?:python)?\s*\n(.*?)```", raw, re.DOTALL | re.IGNORECASE)
+    if code_match:
+        code = max(code_match, key=len).strip()
+    else:
+        m = re.search(r"```(?:python)?\s*\n(.*)", raw, re.DOTALL | re.IGNORECASE)
+        code = m.group(1).strip() if m else raw.strip()
+        code = re.sub(r"```\s*$", "", code).strip()
+    code = "\n".join(line for line in code.splitlines() if not line.strip().startswith("```")).strip()
+
+    test_harness = f"""
+import sys
+
+{code}
+
+# 1. Basic consumption
+limiter1 = TokenBucketRateLimiter(10.0, 2.0)
+assert limiter1.consume(1.0, 5.0) is True, "Test 1 Failed: Basic consume"
+assert limiter1.consume(1.0, 6.0) is False, "Test 2 Failed: Burst over capacity"
+
+# 2. Refill accrual over time
+limiter2 = TokenBucketRateLimiter(10.0, 2.0)
+assert limiter2.consume(0.0, 10.0) is True, "Test 3 Failed: Initial drain"
+assert limiter2.consume(3.0, 6.0) is True, "Test 4 Failed: Refill after 3s (expected 6.0 tokens)"
+
+# 3. Regression test from traceback (failed intermediate poll must retain accrued tokens)
+limiter3 = TokenBucketRateLimiter(5.0, 2.0)
+assert limiter3.consume(0.0, 5.0) is True, "Initial drain failed"
+assert limiter3.consume(0.5, 4.0) is False, "Intermediate poll should be rejected"
+assert limiter3.consume(1.0, 2.0) is True, "Regression failed: Tokens were lost on rejected poll"
+
+print("ALL_UNIT_TESTS_PASSED")
+"""
+
+    unit_tests_passed = False
+    err_msg = ""
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", test_harness],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if proc.returncode == 0 and "ALL_UNIT_TESTS_PASSED" in proc.stdout:
+            unit_tests_passed = True
+        else:
+            err_msg = proc.stderr.strip() or proc.stdout.strip()
+    except Exception as e:
+        err_msg = str(e)
+
+    log(f"  - Regression Fix & Full Unit Test Suite: {'PASS' if unit_tests_passed else 'FAIL'}")
+    if not unit_tests_passed and err_msg:
+        log(f"  - Test Failure Detail: {err_msg[:120]}", color=RED)
+    log(f"  -> Speed: {res.get('decode_speed', 0):.2f} tok/s | TTFT: {res.get('ttft', 0)*1000:.1f} ms | Status: {'PASS' if unit_tests_passed else 'FAIL'}")
+
+    return {
+        "status": "PASS" if unit_tests_passed else "FAIL",
+        "unit_tests_passed": unit_tests_passed,
+        "completion_tokens": res.get("completion_tokens", 0),
+        "ttft_ms": round(res.get("ttft", 0) * 1000.0, 1),
+        "tok_s": round(res.get("decode_speed", 0), 2),
+        "error": err_msg
+    }
+
+
+# ----------------------------------------------------------------------------
+# 22. AIME OLYMPIAD: MULTI-STEP COMPETITION MATHEMATICAL DEDUCTION
+# ----------------------------------------------------------------------------
+def run_test_aime_olympiad_math(client: LLMClient):
+    log("\n" + "="*88, bold=True)
+    log("[TEST 22/22] AIME / Olympiad: Multi-Step Competition Mathematical Deduction", bold=True, color=CYAN)
+    log("="*88)
+
+    prompt = (
+        "Solve the following mathematical competition problem through rigorous deduction:\n\n"
+        "Find the remainder when the integer sum:\n"
+        "  S = 17^2026 + 13^2026\n"
+        "is divided by 1000.\n\n"
+        "Provide your complete mathematical reasoning.\n"
+        "Conclude your final response strictly with: 'ANSWER: <integer>'."
+    )
+
+    log("  Dispatching AIME modular arithmetic & Chinese Remainder Theorem problem...")
+    res = client.call([{"role": "user", "content": prompt}], max_tokens=3500, temperature=0.0, stream=True)
+    text = res.get("content", "") or res.get("text", "")
+
+    # Ground truth: 978 (17^2026 + 13^2026 mod 1000 = 978)
+    has_978 = ("978" in text)
+    strict_match = bool(re.search(r"ANSWER:\s*978\b", text, re.IGNORECASE))
+    matched = strict_match or has_978
+
+    log(f"  - Olympiad Modular Deduction (S mod 1000 = 978): {'PASS' if matched else 'FAIL'}")
+    log(f"  -> Speed: {res.get('decode_speed', 0):.2f} tok/s | TTFT: {res.get('ttft', 0)*1000:.1f} ms | Status: {'PASS' if matched else 'FAIL'}")
+
+    return {
+        "status": "PASS" if matched else "FAIL",
+        "ground_truth": 978,
+        "matched": matched,
+        "completion_tokens": res.get("completion_tokens", 0),
+        "ttft_ms": round(res.get("ttft", 0) * 1000.0, 1),
+        "tok_s": round(res.get("decode_speed", 0), 2)
+    }
+
+
 # ============================================================================
 # FORMATTED CLI SUMMARY SCORECARD
 # ============================================================================
@@ -1646,6 +1856,30 @@ def print_summary_table(report):
     elif 19 in report.get("selected_tests", set()):
         log(f"{'19. Frontier Depth Multi-Needle':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
 
+    # 20. CruxEval
+    if "cruxeval" in res:
+        cx = res.get("cruxeval", {})
+        cx_desc = "State Traversed OK" if cx.get("status") == "PASS" else "State Diverged"
+        log(f"{'20. CruxEval (Mental Code Exec)':<38} | {fmt_status(cx.get('status', 'N/A')):<19} | {cx_desc:<20} | {cx.get('tok_s', 0):.2f} tok/s")
+    elif 20 in report.get("selected_tests", set()):
+        log(f"{'20. CruxEval (Mental Code Exec)':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
+
+    # 21. SWE-bench Bug Patching
+    if "swe_bench_bug_patch" in res:
+        sw = res.get("swe_bench_bug_patch", {})
+        sw_desc = "Regression Tests OK" if sw.get("status") == "PASS" else "Unit Tests Failed"
+        log(f"{'21. SWE-bench (Traceback Fix)':<38} | {fmt_status(sw.get('status', 'N/A')):<19} | {sw_desc:<20} | {sw.get('tok_s', 0):.2f} tok/s")
+    elif 21 in report.get("selected_tests", set()):
+        log(f"{'21. SWE-bench (Traceback Fix)':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
+
+    # 22. AIME Olympiad Math
+    if "aime_olympiad" in res:
+        am = res.get("aime_olympiad", {})
+        am_desc = "Exact Modular Root" if am.get("status") == "PASS" else "Arithmetic Missed"
+        log(f"{'22. AIME Olympiad (Math Reasoning)':<38} | {fmt_status(am.get('status', 'N/A')):<19} | {am_desc:<20} | {am.get('tok_s', 0):.2f} tok/s")
+    elif 22 in report.get("selected_tests", set()):
+        log(f"{'22. AIME Olympiad (Math Reasoning)':<38} | {fmt_status('SKIPPED'):<19} | {'-':<20} | -")
+
     log("="*88 + "\n")
 
 
@@ -1699,6 +1933,15 @@ NAME_TO_TEST_NUM = {
     "frontier_needle_depth": 19,
     "frontier_needle": 19,
     "frontier": 19,
+    "cruxeval": 20,
+    "code_exec_simulation": 20,
+    "swe_bench": 21,
+    "bug_patch": 21,
+    "patching": 21,
+    "rate_limiter": 21,
+    "aime": 22,
+    "olympiad": 22,
+    "math_olympiad": 22,
 }
 
 def parse_selected_tests(test_arg: str, suite: str = "all"):
@@ -1711,12 +1954,12 @@ def parse_selected_tests(test_arg: str, suite: str = "all"):
                 if subparts[0].isdigit() and subparts[1].isdigit():
                     start_n, end_n = int(subparts[0]), int(subparts[1])
                     for n in range(start_n, end_n + 1):
-                        if 1 <= n <= 19:
+                        if 1 <= n <= 22:
                             selected.add(n)
                     continue
             if part.isdigit():
                 n = int(part)
-                if 1 <= n <= 19:
+                if 1 <= n <= 22:
                     selected.add(n)
             else:
                 lower = part.lower().replace("-", "_")
@@ -1726,18 +1969,22 @@ def parse_selected_tests(test_arg: str, suite: str = "all"):
                     selected.update(range(1, 15))
                 elif lower in ("adversarial", "hardened"):
                     selected.update(range(15, 20))
+                elif lower in ("frontier", "sota"):
+                    selected.update(range(20, 23))
                 elif lower == "all":
-                    selected.update(range(1, 20))
+                    selected.update(range(1, 23))
                 else:
                     log(f"Warning: Unknown test identifier '{part}'. Ignored.", color=YELLOW)
-        return selected if selected else set(range(1, 20))
+        return selected if selected else set(range(1, 23))
 
     if suite == "flagship":
         return set(range(1, 15))
     elif suite == "adversarial":
         return set(range(15, 20))
+    elif suite == "frontier":
+        return set(range(20, 23))
     else:  # "all"
-        return set(range(1, 20))
+        return set(range(1, 23))
 
 
 # ============================================================================
@@ -1752,9 +1999,9 @@ def main():
     parser.add_argument("--parallel", "-p", type=int, help="Number of parallel clients to test")
     parser.add_argument("--max-context", type=int, help="Override detected max context window tokens")
     parser.add_argument("--milestones", type=int, nargs="+", default=None, help="Custom context milestones for test 14 (e.g. --milestones 4000 8000 200000 204000)")
-    parser.add_argument("--test", "-t", default=None, help="Run specific test(s) by number or name (e.g. 14, '11,12', '1-5', 'context_scaling', '15-19')")
-    parser.add_argument("--suite", "-s", choices=["all", "flagship", "adversarial"], default="all",
-                        help="Benchmark suite category: 'all' (tests 1-19), 'flagship' (tests 1-14), or 'adversarial' (tests 15-19)")
+    parser.add_argument("--test", "-t", default=None, help="Run specific test(s) by number or name (e.g. 14, '11,12', '1-5', 'context_scaling', '15-22')")
+    parser.add_argument("--suite", "-s", choices=["all", "flagship", "adversarial", "frontier"], default="all",
+                        help="Benchmark suite category: 'all' (tests 1-22), 'flagship' (tests 1-14), 'adversarial' (tests 15-19), or 'frontier' (tests 20-22)")
     parser.add_argument("--quick", "-q", action="store_true",
                         help="Fast smoke qualification mode (compact context horizons, skips heavy prefill)")
     parser.add_argument("--adversarial-depth", type=int, default=32000,
@@ -1921,6 +2168,12 @@ def main():
             parallel_candidates.append(("combinatorial_anti_constraints", lambda: run_test_combinatorial_anti_constraints(client)))
         if 18 in selected_tests:
             parallel_candidates.append(("counterfactual_algebra", lambda: run_test_counterfactual_algebra(client)))
+        if 20 in selected_tests:
+            parallel_candidates.append(("cruxeval", lambda: run_test_cruxeval_execution(client)))
+        if 21 in selected_tests:
+            parallel_candidates.append(("swe_bench_bug_patch", lambda: run_test_swe_bench_bug_patch(client)))
+        if 22 in selected_tests:
+            parallel_candidates.append(("aime_olympiad", lambda: run_test_aime_olympiad_math(client)))
 
         with ThreadPoolExecutor(max_workers=parallel) as pool:
             futures = {pool.submit(fn): name for name, fn in parallel_candidates}
@@ -1982,6 +2235,12 @@ def main():
             report["results"]["counterfactual_algebra"] = run_test_counterfactual_algebra(client)
         if 19 in selected_tests:
             report["results"]["frontier_needle_depth"] = run_test_frontier_needle_depth(client, target_context=adv_depth)
+        if 20 in selected_tests:
+            report["results"]["cruxeval"] = run_test_cruxeval_execution(client)
+        if 21 in selected_tests:
+            report["results"]["swe_bench_bug_patch"] = run_test_swe_bench_bug_patch(client)
+        if 22 in selected_tests:
+            report["results"]["aime_olympiad"] = run_test_aime_olympiad_math(client)
 
     total_suite_time = time.perf_counter() - t_suite_start
     report["total_suite_wall_time_s"] = round(total_suite_time, 2)
