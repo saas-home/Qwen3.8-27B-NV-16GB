@@ -92,7 +92,7 @@ KV cache is **int4** on every profile. The 2.0 bpw baseline uses `CACHE_QUANT=8,
 
 ## Testing and Verification
 
-- `python3 tests/scripts/llm_server_full_test.py --auto` — runs full enterprise benchmark suite against server
+- Enterprise benchmarking and qualification is hosted in [saas-home/llm-eval-suite](https://github.com/saas-home/llm-eval-suite) (`python3 eval.py --endpoint http://127.0.0.1:8888/v1 --auto`)
 - `./linux/simplex doctor` — checks Python, venv, engine version, driver, card, Node, ports, `.env` values, weight completeness, free disk
 - `./linux/simplex status --json` — machine-readable status for scripts
 - `python tools/profiles.py --list --vram 16` — simulate profile choices for a given VRAM

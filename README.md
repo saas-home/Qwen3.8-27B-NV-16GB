@@ -56,7 +56,7 @@ Standard desktop setups truncate context to ~117k tokens and serialize multi-age
 
 ### 🧪 4. Observability & Enterprise Qualification
 * **Live Serving Telemetry (`tools/monitor.py`):** Real-time terminal dashboard tracking active slots, token throughput, and VRAM state.
-* **14-Stage Enterprise Qualification Suite (`tests/scripts/`):** Full automated test harness validating streaming, vision, tools, schemas, socket aborts, and 204k context ladder.
+* **22-Stage Enterprise Qualification & Benchmarking:** Automated evaluation harness and cross-model comparison engine maintained in the dedicated [`saas-home/llm-eval-suite`](https://github.com/saas-home/llm-eval-suite) repository.
 
 ### 📊 Detailed Upstream vs. Fork Comparison
 
@@ -284,25 +284,29 @@ curl http://127.0.0.1:8888/v1/chat/completions \
 
 ---
 
-## 📊 Automated Enterprise Qualification Suite
+## 📊 Automated Enterprise Qualification & Benchmarks
 
-This fork includes a production-grade 14-stage qualification harness located in [`tests/scripts/`](tests/scripts):
+The benchmark and evaluation suite for this serving stack is maintained in its dedicated repository: **[`saas-home/llm-eval-suite`](https://github.com/saas-home/llm-eval-suite)**.
+
+It provides a universal 22-stage evaluation harness, cross-model efficiency comparison engine, and specialized standalone probes (context scaling, continuous batching, streaming TTFT, multimodal document parsing, adversarial robustness, AIME math, and CruxEval).
+
+### Running Benchmarks Against This Server
+
+With this server running (e.g. `./linux/simplex start`), evaluate it using `llm-eval-suite`:
 
 ```bash
-# Activate environment
-source .venv/bin/activate
+# 1. Clone the evaluation repository
+git clone https://github.com/saas-home/llm-eval-suite.git
+cd llm-eval-suite
 
-# Run complete 14-stage qualification suite non-interactively
-python3 tests/scripts/llm_server_full_test.py --endpoint http://127.0.0.1:8888/v1 --auto
+# 2. Run complete 22-stage qualification suite against this local instance
+python3 eval.py --endpoint http://127.0.0.1:8888/v1 --auto
 
-# Run only Context Scaling benchmark (Test 14)
-python3 tests/scripts/llm_server_full_test.py --test 14
+# 3. Run only the Context Scaling benchmark up to the 204k hardware cap
+python3 eval.py --test 14 --milestones 4000 16000 64000 128000 200000 203800
 
-# Run with custom context milestones (e.g. verify 200k and 203.8k directly)
-python3 tests/scripts/llm_server_full_test.py --test 14 --milestones 200000 203800
-
-# Run specific functional tests by name
-python3 tests/scripts/llm_server_full_test.py --test precision,code
+# 4. Compare this model's efficiency head-to-head with another model run
+python3 compare.py results/qwen27b.json results/other_model.json --out results/comparison.md
 ```
 
 ### 📈 Verified Context Scaling Ladder (RTX 4070 Ti SUPER 16 GB)
