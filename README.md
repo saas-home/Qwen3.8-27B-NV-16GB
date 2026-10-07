@@ -5,7 +5,7 @@
   <a href="https://github.com/saas-home/Qwen3.8-27B-NV-16GB"><img src="https://img.shields.io/badge/Target_GPU-RTX_4070_Ti_SUPER_(16GB)-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="NVIDIA 16GB" /></a>
   <a href="https://github.com/saas-home/Qwen3.8-27B-NV-16GB"><img src="https://img.shields.io/badge/Context_Window-204%2C800_Tokens-007ACC?style=for-the-badge" alt="204.8k Context" /></a>
   <a href="https://github.com/saas-home/Qwen3.8-27B-NV-16GB"><img src="https://img.shields.io/badge/Concurrency-PARALLEL%3D2_Continuous_Batching-8A2BE2?style=for-the-badge" alt="Continuous Batching" /></a>
-  <a href="https://github.com/saas-home/Qwen3.8-27B-NV-16GB"><img src="https://img.shields.io/badge/Engine-ExLlamaV3_v1.5.3-success?style=for-the-badge" alt="ExLlamaV3" /></a>
+  <a href="https://github.com/saas-home/Qwen3.8-27B-NV-16GB"><img src="https://img.shields.io/badge/Engine-ExLlamaV3_v1.6.0-success?style=for-the-badge" alt="ExLlamaV3" /></a>
   <a href="https://github.com/saas-home/Qwen3.8-27B-NV-16GB/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0%20%2F%20MIT-orange?style=for-the-badge" alt="License" /></a>
 </p>
 
@@ -93,7 +93,7 @@ flowchart TD
         CPUCache["Host Secondary Prompt Cache<br/><code>CPU_CACHE_GB=24</code> (0.91s TTFT @ 200k)"]
     end
 
-    subgraph ENGINE["ExLlamaV3 v1.5.3 Serving Engine"]
+    subgraph ENGINE["ExLlamaV3 v1.6.0 Serving Engine"]
         Batcher["Continuous Batching Engine (PARALLEL=2)"]
         Clamp["Dynamic Headroom Clamping & Safety Guard"]
     end
@@ -138,7 +138,7 @@ cd Qwen3.8-27B-NV-16GB
 ```
 
 ### Step 2: Automated Environment Setup
-Run the setup script. It inspects your GPU, provisions the isolated `.venv/`, installs PyTorch cu128 and ExLlamaV3 v1.5.3, and downloads the 3.0 bpw EXL3 model weights:
+Run the setup script. It inspects your GPU, provisions the isolated `.venv/`, installs PyTorch cu128 and ExLlamaV3 v1.6.0, and downloads the 3.0 bpw EXL3 model weights:
 ```bash
 ./linux/setup.sh
 ```

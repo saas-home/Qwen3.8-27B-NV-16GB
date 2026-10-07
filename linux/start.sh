@@ -327,7 +327,7 @@ if [ ! -x .venv/bin/python ] \
         _engine_src="."
         _engine_note="local engine repo — compiling CUDA kernels"
     else
-        _want_ver="${EXL3_VERSION:-1.5.3}"
+        _want_ver="${EXL3_VERSION:-1.6.0}"
         _engine_src="${EXL3_REPO:-git+https://github.com/turboderp-org/exllamav3.git@v${_want_ver}}"
         _engine_note="exllamav3 engine v${_want_ver} — clone + compile CUDA kernels"
     fi
@@ -374,7 +374,7 @@ export PATH="$(pwd)/.venv/bin:$PATH"
 
 # --- engine version guard & auto-upgrade ------------------------------------
 # Auto-detect when EXL3_VERSION in .env changes and update the installed wheel
-_want_ver="${EXL3_VERSION:-1.5.3}"
+_want_ver="${EXL3_VERSION:-1.6.0}"
 _cur_ver="$("$PYTHON" -c 'from exllamav3.version import __version__; print(__version__)' 2>/dev/null || echo unknown)"
 if [ "$_cur_ver" != "unknown" ] && [ "$_cur_ver" != "$_want_ver" ]; then
     echo "ExLlamaV3 version change detected: installed ${_cur_ver} -> requested ${_want_ver}"

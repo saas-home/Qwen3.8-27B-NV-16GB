@@ -25,7 +25,7 @@ VENV_PY = ROOT / ".venv" / "Scripts" / "python.exe"
 ENV_FILE = ROOT / ".env"
 ENV_EXAMPLE = ROOT / ".env.example"
 SERVE = ROOT / "tools" / "serve_openai.py"
-EXL3_VERSION = os.environ.get("EXL3_VERSION") or os.environ.get("ENGINE_VERSION") or "1.5.3"
+EXL3_VERSION = os.environ.get("EXL3_VERSION") or os.environ.get("ENGINE_VERSION") or "1.6.0"
 DEFAULT_ENGINE = f"git+https://github.com/turboderp-org/exllamav3.git@v{EXL3_VERSION}"
 # cu128, not the newest line: the engine's own release builds wheels for
 # cu128 and cu132 only, so torch from cu130 would mean no prebuilt engine
@@ -427,7 +427,7 @@ def require_engine_version(cfg: dict[str, str] | None = None) -> None:
         capture_output=True, text=True, cwd=str(ROOT),
     )
     ver = (r.stdout or "").strip() or "unknown"
-    want_ver = (cfg or {}).get("EXL3_VERSION") or os.environ.get("EXL3_VERSION") or "1.5.3"
+    want_ver = (cfg or {}).get("EXL3_VERSION") or os.environ.get("EXL3_VERSION") or "1.6.0"
     if ver != "unknown" and ver != want_ver:
         info(f"ExLlamaV3 version change detected: installed {ver} -> requested {want_ver}")
         info("Updating exllamav3...")
