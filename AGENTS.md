@@ -12,7 +12,7 @@ This is a serving kit for **Qwen/Qwen3.8-27B** in turboderp's EXL3 quants, desig
 - **Profile picker**: `tools/profiles.py` detects GPU VRAM and selects the best quant/context/KV-cache combination
 - **Server**: `tools/serve_openai.py` serves the OpenAI-compatible API on `/v1/chat/completions`
 - **Chat UI**: [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) runs as a second Node process on port 3080
-- **Engine**: ExLlamaV3 v1.5.0 (>= v1.4.4 supported), prebuilt wheels when available; source build fallback
+- **Engine**: ExLlamaV3 v1.6.0 (>= v1.4.4 supported), prebuilt wheels when available; source build fallback
 
 ## Directory Structure
 
@@ -92,6 +92,7 @@ KV cache is **int4** on every profile. The 2.0 bpw baseline uses `CACHE_QUANT=8,
 
 ## Testing and Verification
 
+- Enterprise benchmarking and qualification is hosted in [saas-home/llm-eval-suite](https://github.com/saas-home/llm-eval-suite) (`python3 eval.py --endpoint http://127.0.0.1:8888/v1 --auto`)
 - `./linux/simplex doctor` — checks Python, venv, engine version, driver, card, Node, ports, `.env` values, weight completeness, free disk
 - `./linux/simplex status --json` — machine-readable status for scripts
 - `python tools/profiles.py --list --vram 16` — simulate profile choices for a given VRAM
