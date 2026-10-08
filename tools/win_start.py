@@ -25,7 +25,7 @@ VENV_PY = ROOT / ".venv" / "Scripts" / "python.exe"
 ENV_FILE = ROOT / ".env"
 ENV_EXAMPLE = ROOT / ".env.example"
 SERVE = ROOT / "tools" / "serve_openai.py"
-EXL3_VERSION = os.environ.get("EXL3_VERSION") or os.environ.get("ENGINE_VERSION") or "1.5.0"
+EXL3_VERSION = os.environ.get("EXL3_VERSION") or os.environ.get("ENGINE_VERSION") or "1.6.0"
 DEFAULT_ENGINE = f"git+https://github.com/turboderp-org/exllamav3.git@v{EXL3_VERSION}"
 # cu128, not the newest line: the engine's own release builds wheels for
 # cu128 and cu132 only, so torch from cu130 would mean no prebuilt engine
@@ -427,7 +427,7 @@ def require_engine_version(cfg: dict[str, str] | None = None) -> None:
         capture_output=True, text=True, cwd=str(ROOT),
     )
     ver = (r.stdout or "").strip() or "unknown"
-    want_ver = (cfg or {}).get("EXL3_VERSION") or os.environ.get("EXL3_VERSION") or "1.5.0"
+    want_ver = (cfg or {}).get("EXL3_VERSION") or os.environ.get("EXL3_VERSION") or "1.6.0"
     if ver != "unknown" and ver != want_ver:
         info(f"ExLlamaV3 version change detected: installed {ver} -> requested {want_ver}")
         info("Updating exllamav3...")
@@ -1374,6 +1374,30 @@ def server_command(cfg: dict[str, str]):
         cmd.extend(["--cpu_cache_size", cpu_cache])
     if cfg.get("PARALLEL"):
         cmd.extend(["--parallel", str(cfg["PARALLEL"])])
+    if cfg.get("TEMPERATURE"):
+        cmd.extend(["--temperature", str(cfg["TEMPERATURE"])])
+    if cfg.get("TOP_P"):
+        cmd.extend(["--top_p", str(cfg["TOP_P"])])
+    if cfg.get("TOP_K"):
+        cmd.extend(["--top_k", str(cfg["TOP_K"])])
+    if cfg.get("MIN_P"):
+        cmd.extend(["--min_p", str(cfg["MIN_P"])])
+    if cfg.get("PRESENCE_PENALTY"):
+        cmd.extend(["--presence_penalty", str(cfg["PRESENCE_PENALTY"])])
+    if cfg.get("FREQUENCY_PENALTY"):
+        cmd.extend(["--frequency_penalty", str(cfg["FREQUENCY_PENALTY"])])
+    if cfg.get("REPETITION_PENALTY"):
+        cmd.extend(["--repetition_penalty", str(cfg["REPETITION_PENALTY"])])
+    if cfg.get("DRY_MULTIPLIER"):
+        cmd.extend(["--dry_multiplier", str(cfg["DRY_MULTIPLIER"])])
+    if cfg.get("DRY_BASE"):
+        cmd.extend(["--dry_base", str(cfg["DRY_BASE"])])
+    if cfg.get("DRY_ALLOWED_LENGTH"):
+        cmd.extend(["--dry_allowed_length", str(cfg["DRY_ALLOWED_LENGTH"])])
+    if cfg.get("DRY_RANGE"):
+        cmd.extend(["--dry_range", str(cfg["DRY_RANGE"])])
+    if str(cfg.get("TEMP_LAST", "")).lower() in ("1", "true", "yes"):
+        cmd.append("--temp_last")
     if cfg.get("CHUNK_SIZE"):
         os.environ["CHUNK_SIZE"] = str(cfg["CHUNK_SIZE"])
     cmd.extend(["--vision", vision_mode, "--image_max_pixels", image_max_pixels])
@@ -1507,6 +1531,12 @@ def main() -> int:
         info("After Ready you will be asked whether to open Cherry Studio.")
     print()
     env = dict(os.environ)
+    for k in ("TEMPERATURE", "TOP_P", "TOP_K", "MIN_P", "PRESENCE_PENALTY", "FREQUENCY_PENALTY",
+              "REPETITION_PENALTY", "DRY_MULTIPLIER", "DRY_BASE", "DRY_ALLOWED_LENGTH",
+              "DRY_RANGE", "TEMP_LAST", "CHUNK_SIZE", "MAX_TOKENS", "REASONING_EFFORT",
+              "PARALLEL", "PYTORCH_CUDA_ALLOC_CONF"):
+        if cfg.get(k):
+            env[k] = str(cfg[k])
     # On a pipe, Python falls back to the ANSI code page; this side decodes
     # UTF-8, so say so rather than letting an accented path arrive as mojibake.
     env.setdefault("PYTHONIOENCODING", "utf-8")

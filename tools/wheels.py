@@ -176,7 +176,7 @@ def get_engine_version() -> str:
                         break
         except Exception:
             pass
-    return (v or "1.5.0").strip()
+    return (v or "1.6.0").strip()
 
 
 ENGINE_PACKAGE = "exllamav3"
@@ -187,7 +187,6 @@ ENGINE_RELEASE = ("https://github.com/turboderp-org/exllamav3/releases/download/
 # cuda line -> torch version -> the cp tags built for it (same on both platforms)
 ENGINE_WHEELS: dict[str, dict[str, tuple[str, ...]]] = {
     "cu128": {
-        "2.7.0":  ("cp310", "cp311", "cp312", "cp313"),
         "2.8.0":  ("cp310", "cp311", "cp312", "cp313"),
         "2.9.0":  ("cp310", "cp311", "cp312", "cp313", "cp314"),
         "2.10.0": ("cp310", "cp311", "cp312", "cp313", "cp314"),
@@ -195,6 +194,8 @@ ENGINE_WHEELS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "cu132": {
         "2.11.0": ("cp312", "cp313", "cp314"),
+        "2.12.0": ("cp310", "cp311", "cp312", "cp313", "cp314"),
+        "2.13.0": ("cp310", "cp311", "cp312", "cp313", "cp314"),
     },
 }
 # Only these platforms are built. A wheel for anything else does not exist, so

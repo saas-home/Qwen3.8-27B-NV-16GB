@@ -213,6 +213,18 @@ if [ -n "${PYTORCH_CUDA_ALLOC_CONF:-}" ]; then export PYTORCH_CUDA_ALLOC_CONF; f
 if [ -n "${MAX_TOKENS:-}" ]; then export MAX_TOKENS; fi
 if [ -n "${REASONING_EFFORT:-}" ]; then export REASONING_EFFORT; fi
 if [ -n "${PARALLEL:-}" ]; then export PARALLEL; fi
+if [ -n "${TEMPERATURE:-}" ]; then export TEMPERATURE; fi
+if [ -n "${TOP_P:-}" ]; then export TOP_P; fi
+if [ -n "${TOP_K:-}" ]; then export TOP_K; fi
+if [ -n "${MIN_P:-}" ]; then export MIN_P; fi
+if [ -n "${PRESENCE_PENALTY:-}" ]; then export PRESENCE_PENALTY; fi
+if [ -n "${FREQUENCY_PENALTY:-}" ]; then export FREQUENCY_PENALTY; fi
+if [ -n "${REPETITION_PENALTY:-}" ]; then export REPETITION_PENALTY; fi
+if [ -n "${DRY_MULTIPLIER:-}" ]; then export DRY_MULTIPLIER; fi
+if [ -n "${DRY_BASE:-}" ]; then export DRY_BASE; fi
+if [ -n "${DRY_ALLOWED_LENGTH:-}" ]; then export DRY_ALLOWED_LENGTH; fi
+if [ -n "${DRY_RANGE:-}" ]; then export DRY_RANGE; fi
+if [ -n "${TEMP_LAST:-}" ]; then export TEMP_LAST; fi
 
 # --- bootstrap: build the venv + install the engine on first run ----------
 # Re-enters if the venv is missing OR the install is incomplete (e.g. a
@@ -315,7 +327,7 @@ if [ ! -x .venv/bin/python ] \
         _engine_src="."
         _engine_note="local engine repo — compiling CUDA kernels"
     else
-        _want_ver="${EXL3_VERSION:-1.5.0}"
+        _want_ver="${EXL3_VERSION:-1.6.0}"
         _engine_src="${EXL3_REPO:-git+https://github.com/turboderp-org/exllamav3.git@v${_want_ver}}"
         _engine_note="exllamav3 engine v${_want_ver} — clone + compile CUDA kernels"
     fi
@@ -362,7 +374,7 @@ export PATH="$(pwd)/.venv/bin:$PATH"
 
 # --- engine version guard & auto-upgrade ------------------------------------
 # Auto-detect when EXL3_VERSION in .env changes and update the installed wheel
-_want_ver="${EXL3_VERSION:-1.5.0}"
+_want_ver="${EXL3_VERSION:-1.6.0}"
 _cur_ver="$("$PYTHON" -c 'from exllamav3.version import __version__; print(__version__)' 2>/dev/null || echo unknown)"
 if [ "$_cur_ver" != "unknown" ] && [ "$_cur_ver" != "$_want_ver" ]; then
     echo "ExLlamaV3 version change detected: installed ${_cur_ver} -> requested ${_want_ver}"
@@ -528,6 +540,42 @@ if [ "$CPU_CACHE_GB" != "0" ]; then
 fi
 if [ -n "${PARALLEL:-}" ]; then
     cmd+=(--parallel "$PARALLEL")
+fi
+if [ -n "${TEMPERATURE:-}" ]; then
+    cmd+=(--temperature "$TEMPERATURE")
+fi
+if [ -n "${TOP_P:-}" ]; then
+    cmd+=(--top_p "$TOP_P")
+fi
+if [ -n "${TOP_K:-}" ]; then
+    cmd+=(--top_k "$TOP_K")
+fi
+if [ -n "${MIN_P:-}" ]; then
+    cmd+=(--min_p "$MIN_P")
+fi
+if [ -n "${PRESENCE_PENALTY:-}" ]; then
+    cmd+=(--presence_penalty "$PRESENCE_PENALTY")
+fi
+if [ -n "${FREQUENCY_PENALTY:-}" ]; then
+    cmd+=(--frequency_penalty "$FREQUENCY_PENALTY")
+fi
+if [ -n "${REPETITION_PENALTY:-}" ]; then
+    cmd+=(--repetition_penalty "$REPETITION_PENALTY")
+fi
+if [ -n "${DRY_MULTIPLIER:-}" ]; then
+    cmd+=(--dry_multiplier "$DRY_MULTIPLIER")
+fi
+if [ -n "${DRY_BASE:-}" ]; then
+    cmd+=(--dry_base "$DRY_BASE")
+fi
+if [ -n "${DRY_ALLOWED_LENGTH:-}" ]; then
+    cmd+=(--dry_allowed_length "$DRY_ALLOWED_LENGTH")
+fi
+if [ -n "${DRY_RANGE:-}" ]; then
+    cmd+=(--dry_range "$DRY_RANGE")
+fi
+if [ -n "${TEMP_LAST:-}" ] && [ "$TEMP_LAST" != "0" ] && [ "$TEMP_LAST" != "false" ]; then
+    cmd+=(--temp_last)
 fi
 [ -n "${CHUNK_SIZE:-}" ] && export CHUNK_SIZE
 [ -n "${EXL3_VISION_PINNED:-}" ] && export EXL3_VISION_PINNED

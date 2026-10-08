@@ -51,10 +51,42 @@ import argparse, asyncio, json, os, re, sys, time, threading, uuid, queue
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from aiohttp import web
 
+def _load_dotenv():
+    env_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+    if os.path.isfile(env_file):
+        try:
+            with open(env_file, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = v.split("#", 1)[0].strip().strip('"').strip("'")
+                    if k and k not in os.environ:
+                        os.environ[k] = v
+        except Exception:
+            pass
+
+_load_dotenv()
+
 MODEL_DIR = "models/Qwen3.8-27B-EXL3-2.0bpw"
 DRAFT_DIR = "mtp"   # default drafting method: MTP head (no external draft model)
 PORT = 8888
 MODEL_ID = "qwen3.8-27b-exl3-2.0bpw"
+
+DEFAULT_TEMPERATURE = float(os.environ.get("TEMPERATURE", 1.0))
+DEFAULT_TOP_P = float(os.environ.get("TOP_P", 0.95))
+DEFAULT_TOP_K = int(os.environ.get("TOP_K", 20))
+DEFAULT_MIN_P = float(os.environ.get("MIN_P", 0.0))
+DEFAULT_PRESENCE_PENALTY = float(os.environ.get("PRESENCE_PENALTY", 0.0))
+DEFAULT_FREQUENCY_PENALTY = float(os.environ.get("FREQUENCY_PENALTY", 0.0))
+DEFAULT_REPETITION_PENALTY = float(os.environ.get("REPETITION_PENALTY", 1.0))
+DEFAULT_DRY_MULTIPLIER = float(os.environ.get("DRY_MULTIPLIER", 0.0))
+DEFAULT_DRY_BASE = float(os.environ.get("DRY_BASE", 1.75))
+DEFAULT_DRY_ALLOWED_LENGTH = int(os.environ.get("DRY_ALLOWED_LENGTH", 4))
+DEFAULT_DRY_RANGE = int(os.environ.get("DRY_RANGE", 0))
+DEFAULT_TEMP_LAST = os.environ.get("TEMP_LAST", "0").lower() in ("1", "true", "yes")
 
 PARALLEL = int(os.environ.get("PARALLEL", 2))
 concurrency_semaphore = threading.Semaphore(PARALLEL)
@@ -663,7 +695,11 @@ def template_effort(tokenizer, effort):
 def generate_full(generator, tokenizer, messages, max_tokens, temperature,
                   top_p, top_k, seed, tools, tool_choice = None, stop = None,
                   on_text = None, enable_thinking = True, should_stop = None,
-                  reasoning_effort = None):
+                  reasoning_effort = None,
+                  min_p = 0.0, presence_penalty = 0.0, frequency_penalty = 0.0,
+                  repetition_penalty = 1.0, dry_multiplier = 0.0, dry_base = 1.75,
+                  dry_allowed_length = 2, dry_range = 0, temp_last = False,
+                  logit_bias = None):
     """Blocking generation; returns (text, tool_calls, finish, p_toks, o_toks,
     reasoning, content)."""
     schemas = build_tool_schemas(tools)
@@ -743,7 +779,21 @@ def generate_full(generator, tokenizer, messages, max_tokens, temperature,
         nonlocal text, reason
         text = ""
         reason = "max_new_tokens"
-        sampler = ComboSampler(temperature = temperature, top_k = top_k, top_p = top_p)
+        sampler = ComboSampler(
+            rep_p = repetition_penalty,
+            freq_p = frequency_penalty,
+            pres_p = presence_penalty,
+            dry_multiplier = dry_multiplier,
+            dry_base = dry_base,
+            dry_allowed_length = dry_allowed_length,
+            dry_range = dry_range,
+            temperature = temperature,
+            min_p = min_p,
+            top_k = top_k,
+            top_p = top_p,
+            temp_last = temp_last,
+            logit_bias = logit_bias,
+        )
         stop_conditions = ["<|im_end|>", tokenizer.eos_token_id] + (stop or [])
         job = Job(input_ids = input_ids, max_new_tokens = effective_max_tokens,
                   stop_conditions = stop_conditions,
@@ -897,9 +947,48 @@ def parse_request(body):
     default_max = int(os.environ.get("MAX_TOKENS", 65536))
     max_tokens = int(body.get("max_tokens") or
                      body.get("max_completion_tokens") or default_max)
-    temperature = float(body.get("temperature", 0.6))
-    top_p = float(body.get("top_p", 0.95))
-    top_k = int(body.get("top_k", 20))
+    temp_val = body.get("temperature")
+    temperature = float(temp_val) if temp_val is not None else DEFAULT_TEMPERATURE
+    top_p_val = body.get("top_p")
+    top_p = float(top_p_val) if top_p_val is not None else DEFAULT_TOP_P
+    top_k_val = body.get("top_k")
+    top_k = int(top_k_val) if top_k_val is not None else DEFAULT_TOP_K
+
+    min_p_val = body.get("min_p")
+    min_p = float(min_p_val) if min_p_val is not None else DEFAULT_MIN_P
+
+    pres_p_val = body.get("presence_penalty") if body.get("presence_penalty") is not None else body.get("pres_p")
+    presence_penalty = float(pres_p_val) if pres_p_val is not None else DEFAULT_PRESENCE_PENALTY
+
+    freq_p_val = body.get("frequency_penalty") if body.get("frequency_penalty") is not None else body.get("freq_p")
+    frequency_penalty = float(freq_p_val) if freq_p_val is not None else DEFAULT_FREQUENCY_PENALTY
+
+    rep_p_val = body.get("repetition_penalty") if body.get("repetition_penalty") is not None else body.get("rep_p")
+    repetition_penalty = float(rep_p_val) if rep_p_val is not None else DEFAULT_REPETITION_PENALTY
+
+    dry_mult_val = body.get("dry_multiplier")
+    dry_multiplier = float(dry_mult_val) if dry_mult_val is not None else DEFAULT_DRY_MULTIPLIER
+
+    dry_base_val = body.get("dry_base")
+    dry_base = float(dry_base_val) if dry_base_val is not None else DEFAULT_DRY_BASE
+
+    dry_len_val = body.get("dry_allowed_length")
+    dry_allowed_length = int(dry_len_val) if dry_len_val is not None else DEFAULT_DRY_ALLOWED_LENGTH
+
+    dry_rng_val = body.get("dry_range")
+    dry_range = int(dry_rng_val) if dry_rng_val is not None else DEFAULT_DRY_RANGE
+
+    temp_last_val = body.get("temp_last")
+    temp_last = bool(temp_last_val) if temp_last_val is not None else DEFAULT_TEMP_LAST
+
+    raw_lb = body.get("logit_bias")
+    logit_bias = None
+    if isinstance(raw_lb, dict):
+        try:
+            logit_bias = {int(k): float(v) for k, v in raw_lb.items()}
+        except (ValueError, TypeError):
+            logit_bias = None
+
     seed = body.get("seed")
     tools = body.get("tools") or None
     stop = body.get("stop")
@@ -927,6 +1016,16 @@ def parse_request(body):
         messages = normalize_messages(messages),
         max_tokens = max_tokens, temperature = temperature,
         top_p = top_p, top_k = top_k,
+        min_p = min_p,
+        presence_penalty = presence_penalty,
+        frequency_penalty = frequency_penalty,
+        repetition_penalty = repetition_penalty,
+        dry_multiplier = dry_multiplier,
+        dry_base = dry_base,
+        dry_allowed_length = dry_allowed_length,
+        dry_range = dry_range,
+        temp_last = temp_last,
+        logit_bias = logit_bias,
         seed = int(seed) if seed is not None else None,
         tools = tools,
         tool_choice = body.get("tool_choice"),
@@ -958,7 +1057,8 @@ async def chat_completions(request):
     req, err = parse_request(body)
     if err:
         return web.json_response({"error": {"message": err}}, status = 400)
-    print(f" -> [{time.strftime('%H:%M:%S')}] request: stream={req['stream']}, max_tokens={req['max_tokens']}, msgs={len(req['messages'])}, thinking={req['enable_thinking']}", flush = True)
+    dry_log = f", dry={req['dry_multiplier']}" if req["dry_multiplier"] > 0 else ""
+    print(f" -> [{time.strftime('%H:%M:%S')}] request: stream={req['stream']}, max_tokens={req['max_tokens']}, msgs={len(req['messages'])}, thinking={req['enable_thinking']}, temp={req['temperature']}, top_p={req['top_p']}, top_k={req['top_k']}, min_p={req['min_p']}{dry_log}", flush = True)
 
     import asyncio
     if not req["stream"]:
@@ -968,7 +1068,17 @@ async def chat_completions(request):
                 req["max_tokens"], req["temperature"], req["top_p"], req["top_k"],
                 req["seed"], req["tools"], req["tool_choice"], req["stop"],
                 None, req["enable_thinking"], None,
-                req["reasoning_effort"])
+                req["reasoning_effort"],
+                min_p = req["min_p"],
+                presence_penalty = req["presence_penalty"],
+                frequency_penalty = req["frequency_penalty"],
+                repetition_penalty = req["repetition_penalty"],
+                dry_multiplier = req["dry_multiplier"],
+                dry_base = req["dry_base"],
+                dry_allowed_length = req["dry_allowed_length"],
+                dry_range = req["dry_range"],
+                temp_last = req["temp_last"],
+                logit_bias = req["logit_bias"])
         except AssertionError as e:
             return web.json_response(
                 {"error": {"message": f"context/cache: {e}", "type": "invalid_request_error"}},
@@ -1030,7 +1140,17 @@ async def chat_completions(request):
                     on_text = None if forced_choice else on_text,
                     enable_thinking = req["enable_thinking"],
                     reasoning_effort = req["reasoning_effort"],
-                    should_stop = gone.is_set)
+                    should_stop = gone.is_set,
+                    min_p = req["min_p"],
+                    presence_penalty = req["presence_penalty"],
+                    frequency_penalty = req["frequency_penalty"],
+                    repetition_penalty = req["repetition_penalty"],
+                    dry_multiplier = req["dry_multiplier"],
+                    dry_base = req["dry_base"],
+                    dry_allowed_length = req["dry_allowed_length"],
+                    dry_range = req["dry_range"],
+                    temp_last = req["temp_last"],
+                    logit_bias = req["logit_bias"])
                 loop.call_soon_threadsafe(
                     queue.put_nowait,
                     ("done", (calls, finish, reasoning, content, ptoks, otoks, cached_toks)))
@@ -1318,7 +1438,9 @@ def mount_landing(app, args):
 
 
 def main():
-    global MODEL_DIR, DRAFT_DIR, PORT, MODEL_ID
+    global MODEL_DIR, DRAFT_DIR, PORT, MODEL_ID, DEFAULT_TEMPERATURE, DEFAULT_TOP_P, DEFAULT_TOP_K
+    global DEFAULT_MIN_P, DEFAULT_PRESENCE_PENALTY, DEFAULT_FREQUENCY_PENALTY, DEFAULT_REPETITION_PENALTY
+    global DEFAULT_DRY_MULTIPLIER, DEFAULT_DRY_BASE, DEFAULT_DRY_ALLOWED_LENGTH, DEFAULT_DRY_RANGE, DEFAULT_TEMP_LAST
     _quiet_triton()
     ap = argparse.ArgumentParser()
     ap.add_argument("-m", "--model", default = MODEL_DIR)
@@ -1366,6 +1488,30 @@ def main():
                            "set + a long transcript)")
     ap.add_argument("--parallel", type = int, default = int(os.environ.get("PARALLEL", 2)),
                     help = "maximum concurrent / parallel generation requests (default: 2)")
+    ap.add_argument("--temperature", type = float, default = float(os.environ.get("TEMPERATURE", DEFAULT_TEMPERATURE)),
+                    help = "default sampling temperature when omitted in requests (default: 0.70)")
+    ap.add_argument("--top_p", type = float, default = float(os.environ.get("TOP_P", DEFAULT_TOP_P)),
+                    help = "default sampling top_p when omitted in requests (default: 0.92)")
+    ap.add_argument("--top_k", type = int, default = int(os.environ.get("TOP_K", DEFAULT_TOP_K)),
+                    help = "default sampling top_k when omitted in requests (default: 20)")
+    ap.add_argument("--min_p", type = float, default = float(os.environ.get("MIN_P", DEFAULT_MIN_P)),
+                    help = "default sampling min_p when omitted in requests (default: 0.0; disabled)")
+    ap.add_argument("--presence_penalty", type = float, default = float(os.environ.get("PRESENCE_PENALTY", DEFAULT_PRESENCE_PENALTY)),
+                    help = "default presence_penalty when omitted in requests (default: 0.0)")
+    ap.add_argument("--frequency_penalty", type = float, default = float(os.environ.get("FREQUENCY_PENALTY", DEFAULT_FREQUENCY_PENALTY)),
+                    help = "default frequency_penalty when omitted in requests (default: 0.0)")
+    ap.add_argument("--repetition_penalty", type = float, default = float(os.environ.get("REPETITION_PENALTY", DEFAULT_REPETITION_PENALTY)),
+                    help = "default repetition_penalty when omitted in requests (default: 1.00)")
+    ap.add_argument("--dry_multiplier", type = float, default = float(os.environ.get("DRY_MULTIPLIER", DEFAULT_DRY_MULTIPLIER)),
+                    help = "default DRY repetition penalty multiplier (default: 0.0; disabled)")
+    ap.add_argument("--dry_base", type = float, default = float(os.environ.get("DRY_BASE", DEFAULT_DRY_BASE)),
+                    help = "default DRY penalty base (default: 1.75)")
+    ap.add_argument("--dry_allowed_length", type = int, default = int(os.environ.get("DRY_ALLOWED_LENGTH", DEFAULT_DRY_ALLOWED_LENGTH)),
+                    help = "default DRY allowed n-gram repetition length (default: 4)")
+    ap.add_argument("--dry_range", type = int, default = int(os.environ.get("DRY_RANGE", DEFAULT_DRY_RANGE)),
+                    help = "default DRY context token range (default: 0 for full context)")
+    ap.add_argument("--temp_last", action = "store_true", default = DEFAULT_TEMP_LAST,
+                    help = "apply temperature scaling after min_p/top_k/top_p (default: False)")
     ap.add_argument("--no-reasoning-preserve", dest = "no_reasoning_preserve", action = "store_true",
                     default = None,
                     help = "Strip internal <think>...</think> tags from prior conversational history to save context tokens (default: True)")
@@ -1374,6 +1520,18 @@ def main():
     args = ap.parse_args()
     if args.no_reasoning_preserve is not None:
         os.environ["NO_REASONING_PRESERVE"] = "1" if args.no_reasoning_preserve else "0"
+    DEFAULT_TEMPERATURE = args.temperature
+    DEFAULT_TOP_P = args.top_p
+    DEFAULT_TOP_K = args.top_k
+    DEFAULT_MIN_P = args.min_p
+    DEFAULT_PRESENCE_PENALTY = args.presence_penalty
+    DEFAULT_FREQUENCY_PENALTY = args.frequency_penalty
+    DEFAULT_REPETITION_PENALTY = args.repetition_penalty
+    DEFAULT_DRY_MULTIPLIER = args.dry_multiplier
+    DEFAULT_DRY_BASE = args.dry_base
+    DEFAULT_DRY_ALLOWED_LENGTH = args.dry_allowed_length
+    DEFAULT_DRY_RANGE = args.dry_range
+    DEFAULT_TEMP_LAST = args.temp_last
     MODEL_ID = (args.model_id or os.path.basename(os.path.normpath(args.model))).strip().lower() or MODEL_ID
     global batch_worker, concurrency_semaphore, PARALLEL
     PARALLEL = int(getattr(args, "parallel", None) or os.environ.get("PARALLEL", 2))
