@@ -10,6 +10,8 @@ set -euo pipefail
 # This script lives in linux/; the kit is its parent.
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SELF_DIR/.."
+# shellcheck source=linux/preflight.sh
+. "$SELF_DIR/preflight.sh"
 
 # --- background mode ------------------------------------------------------
 # On Windows the kit lives in the tray with no console; the honest equivalent
@@ -203,6 +205,27 @@ _load_env() {
 }
 _load_env
 
+# --- which engine, which venv ---------------------------------------------
+# Every DRAFT value runs on ExLlamaV3 1.6.0 in the one .venv, so switching DRAFT
+# back and forth never reinstalls anything. transformers is installed with it:
+# 1.6.0's chat template imports it and the engine no longer pulls it in.
+# DRAFT=dflash2 (tools/dflash2.py) is the only value with a gate: a card that is
+# too small is refused here, before a download exists.
+VENV=".venv"
+ENGINE_VERSION="1.6.0"
+_wheel_engine=(--engine-version "$ENGINE_VERSION")
+_extra_pkgs=(transformers)   # tools/dflash2.py EXTRA_PACKAGES
+_extra_probe=", transformers"
+_dflash2=0
+if [ "$(echo "${DRAFT:-}" | tr '[:upper:]' '[:lower:]')" = "dflash2" ]; then
+    if [ -z "$_pyprof" ]; then
+        echo "DRAFT=dflash2 needs python3 on PATH to check this machine, and none was found." >&2
+        exit 1
+    fi
+    "$_pyprof" tools/dflash2.py gate || exit 1
+    _dflash2=1
+fi
+
 # .env is sourced as shell vars; the model-download subprocess needs the HF
 # token in its environment, so export it if set. Export ExLlamaV3 config
 # variables so the engine reads them before loading the model.
@@ -229,8 +252,8 @@ if [ -n "${TEMP_LAST:-}" ]; then export TEMP_LAST; fi
 # --- bootstrap: build the venv + install the engine on first run ----------
 # Re-enters if the venv is missing OR the install is incomplete (e.g. a
 # Ctrl-C during the first run left a half-installed venv) — pip is idempotent.
-if [ ! -x .venv/bin/python ] \
-   || ! .venv/bin/python -c "import torch, exllamav3, aiohttp, huggingface_hub" 2>/dev/null; then
+if [ ! -x "$VENV/bin/python" ] \
+   || ! "$VENV/bin/python" -c "import torch, exllamav3, aiohttp, huggingface_hub$_extra_probe" 2>/dev/null; then
     if [ "$MODE" != "setup" ]; then
         echo "This kit is not ready to start: the Python environment is missing or incomplete."
         _ask_yes "Install it now?" || {
@@ -286,9 +309,9 @@ if [ ! -x .venv/bin/python ] \
         return 1
     }
 
-    _step "1/5 creating Python virtualenv" python3 -m venv .venv
+    _step "1/5 creating Python virtualenv" python3 -m venv "$VENV"
     _quiet_step "2/5 build tools (pip, setuptools, wheel)" \
-        .venv/bin/pip install --quiet --upgrade pip setuptools wheel typing_extensions packaging
+        "$VENV/bin/pip" install --quiet --upgrade pip setuptools wheel typing_extensions packaging
     # GPU torch + its NVIDIA runtime deps; PyPI stays primary so the
     # nvidia-* runtime wheels resolve too (the local-version wheel wins).
     #
@@ -310,11 +333,12 @@ if [ ! -x .venv/bin/python ] \
     # Uncapped, a 3.10 user gets a torch no wheel matches and compiles for
     # twenty minutes. tools/wheels.py owns that table and answers from it;
     # it prints a plain "torch" when capping would buy nothing.
-    _torch_req="$(.venv/bin/python tools/wheels.py --torch-req --cuda "$_torch_index" 2>/dev/null || echo torch)"
+    _torch_req="$("$VENV/bin/python" tools/wheels.py --torch-req --cuda "$_torch_index" \
+        ${_wheel_engine[@]+"${_wheel_engine[@]}"} 2>/dev/null || echo torch)"
     [ -n "$_torch_req" ] || _torch_req=torch
     # Output NOT hidden: pip's own download progress bars show here.
     _step "3/5 PyTorch (~2–3 GB download the first time)" \
-        .venv/bin/pip install "$_torch_req" \
+        "$VENV/bin/pip" install "$_torch_req" \
             --extra-index-url "$_torch_index"
     # The engine itself; its setup.py pulls in the rest of the deps.
     # Inside the engine repo: build from the local checkout (EXL3_REPO is
@@ -327,7 +351,7 @@ if [ ! -x .venv/bin/python ] \
         _engine_src="."
         _engine_note="local engine repo — compiling CUDA kernels"
     else
-        _want_ver="${EXL3_VERSION:-1.6.0}"
+        _want_ver="${EXL3_VERSION:-$ENGINE_VERSION}"
         _engine_src="${EXL3_REPO:-git+https://github.com/turboderp-org/exllamav3.git@v${_want_ver}}"
         _engine_note="exllamav3 engine v${_want_ver} — clone + compile CUDA kernels"
     fi
@@ -337,10 +361,12 @@ if [ ! -x .venv/bin/python ] \
         # GB10/Spark needs the arch list spelled out; x86 auto-detects.
         export TORCH_CUDA_ARCH_LIST="12.0;12.1"
     fi
-    export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
+    # nvcc lives in /usr/local/cuda on Debian/Ubuntu but /opt/cuda on Arch;
+    # take whichever exists instead of assuming one.
+    export CUDA_HOME="${CUDA_HOME:-$(detect_cuda_home || echo /usr/local/cuda)}"
     # 8 parallel nvcc jobs when the machine can take it (halves wall time on
     # many-core boxes); 4 otherwise. Override in .env if needed.
-    export MAX_JOBS="${MAX_JOBS:-$(( $(nproc) >= 8 && $(free -g | awk '/^Mem:/{print $2}') >= 32 ? 8 : 4 ))}"
+    export MAX_JOBS="${MAX_JOBS:-$(( $(nproc) >= 8 && $(_free_gib 2) >= 32 ? 8 : 4 ))}"
     # Fail fast (clear error) instead of hanging if the engine repo needs
     # auth (GIT_ASKPASS: proven on git 2.43 where GIT_TERMINAL_PROMPTS
     # alone does not suppress the credential prompt).
@@ -351,30 +377,34 @@ if [ ! -x .venv/bin/python ] \
     # instead of a 5-20 minute compile that needs the CUDA Toolkit.
     _engine_wheel=""
     if [ "$_engine_src" != "." ] && [ -z "${EXL3_REPO:-}" ]; then
-        _engine_wheel="$(.venv/bin/python tools/wheels.py --url --python .venv/bin/python 2>/dev/null || true)"
+        _engine_wheel="$("$VENV/bin/python" tools/wheels.py --url --python "$VENV/bin/python" \
+            ${_wheel_engine[@]+"${_wheel_engine[@]}"} 2>/dev/null || true)"
     fi
     if [ -n "$_engine_wheel" ]; then
         _quiet_step "4/5 exllamav3 engine — prebuilt wheel (no compiler needed)" \
-            .venv/bin/pip install --only-binary :all: --no-build-isolation "$_engine_wheel" \
+            "$VENV/bin/pip" install --only-binary :all: --no-build-isolation "$_engine_wheel" \
             || _engine_wheel=""
     fi
     if [ -z "$_engine_wheel" ]; then
+        # about to compile: stop here, with the fix, if the host compiler is one
+        # this CUDA release cannot use (rolling-release distros ship GCC 14+)
+        check_host_compiler "$CUDA_HOME" || exit 1
         _quiet_step "4/5 ${_engine_note} (5–20 min depending on machine)" \
-            .venv/bin/pip install --no-build-isolation \
+            "$VENV/bin/pip" install --no-build-isolation \
                 "${_engine_src}"
     fi
-    _quiet_step "5/5 server dependencies (aiohttp, huggingface_hub)" \
-        .venv/bin/pip install --quiet aiohttp huggingface_hub
+    _quiet_step "5/5 server dependencies (aiohttp, huggingface_hub$_extra_probe)" \
+        "$VENV/bin/pip" install --quiet aiohttp huggingface_hub ${_extra_pkgs[@]+"${_extra_pkgs[@]}"}
     echo "Setup complete."
 fi
 
-PYTHON=.venv/bin/python
+PYTHON="$VENV/bin/python"
 # venv tools (ninja, …) must stay findable for the engine's JIT fallback.
-export PATH="$(pwd)/.venv/bin:$PATH"
+export PATH="$(pwd)/$VENV/bin:$PATH"
 
 # --- engine version guard & auto-upgrade ------------------------------------
 # Auto-detect when EXL3_VERSION in .env changes and update the installed wheel
-_want_ver="${EXL3_VERSION:-1.6.0}"
+_want_ver="${EXL3_VERSION:-$ENGINE_VERSION}"
 _cur_ver="$("$PYTHON" -c 'from exllamav3.version import __version__; print(__version__)' 2>/dev/null || echo unknown)"
 if [ "$_cur_ver" != "unknown" ] && [ "$_cur_ver" != "$_want_ver" ]; then
     echo "ExLlamaV3 version change detected: installed ${_cur_ver} -> requested ${_want_ver}"
@@ -397,12 +427,12 @@ if [ "$_cur_ver" != "unknown" ] && [ "$_cur_ver" != "$_want_ver" ]; then
 fi
 
 # v1.4.4+ is mandatory: this quant ships a quantized vision tower (vision_bits 3),
-# which older builds decode incorrectly, and stock v1.4.4+ is what this kit is
+# which older builds decode incorrectly, and stock v1.6.0 is what this kit is
 # validated against.
-if ! "$PYTHON" -c 'import sys; from exllamav3.version import __version__ as v; sys.exit(0 if tuple(map(int, v.split(".")[:3])) >= (1, 4, 4) else (print(" !! unexpected exllamav3 version:", v) or 1))' 2>/dev/null; then
+if ! "$PYTHON" -c "import sys; from exllamav3.version import __version__ as v; sys.exit(0 if (v == \"$ENGINE_VERSION\" or tuple(map(int, v.split('.')[:3])) >= (1, 4, 4)) else (print(\" !! unexpected exllamav3 version:\", v) or 1))" 2>/dev/null; then
     _gotver="$("$PYTHON" -c 'from exllamav3.version import __version__; print(__version__)' 2>/dev/null || echo unknown)"
-    echo "ERROR: this kit requires ExLlamaV3 >= v1.4.4 (configured: ${_want_ver}), but the venv has '$_gotver'." >&2
-    echo "Fix: set EXL3_VERSION=${_want_ver} in .env or run: EXL3_VERSION=${_want_ver} ./start.sh" >&2
+    echo "ERROR: this kit requires ExLlamaV3 v$ENGINE_VERSION (or >= v1.4.4), but the venv has '$_gotver'." >&2
+    echo "Fix: rm -rf $VENV && ./start.sh   (the first run reinstalls the engine; models are kept)" >&2
     exit 1
 fi
 
@@ -424,15 +454,33 @@ if [ "$MODE" = "start" ] && [ "$PICK" = "1" ]; then
         3)  echo "Nothing started." ; exit 0 ;;
         *)  echo "Could not work out which model to start (code $_pick)." >&2 ; exit "$_pick" ;;
     esac
+    # re-read for the model just picked; the environment chosen above stays
+    _venv="$VENV"; _engine="$ENGINE_VERSION"
     _load_env
+    VENV="$_venv"; ENGINE_VERSION="$_engine"
 fi
 
 MODEL_DIR="${MODEL_DIR:?MODEL_DIR must be set in .env}"
+# DRAFT=dflash2 runs the settings it was measured with, for this run only (.env
+# is not changed), and only for the quants that were measured. tools/dflash2.py
+# says which, and refuses the rest here - before any model is downloaded.
+_gpu_from=".env"
+if [ "$_dflash2" = 1 ]; then
+    _pin="$("$PYTHON" tools/dflash2.py pin --model-dir "$MODEL_DIR")" || exit 1
+    while IFS='=' read -r _k _v; do
+        case "$_k" in
+            CONTEXT_SIZE|GPU_MEM_GB|CACHE_QUANT|DFLASH2_REPO|DFLASH2_REVISION|DFLASH2_DIR)
+                printf -v "$_k" '%s' "$_v" ;;
+        esac
+    done <<< "$_pin"
+    _gpu_from="the DRAFT=dflash2 measurement, not .env"
+    echo "DRAFT=dflash2: context $CONTEXT_SIZE, KV cache $CACHE_QUANT-bit (the measured settings)"
+fi
 PORT="${PORT:-8888}"
 HOST="${HOST:-0.0.0.0}"
 CONTEXT_SIZE="${CONTEXT_SIZE:-199936}"
 if [ -n "${GPU_MEM_GB:-}" ]; then
-    echo "GPU memory budget: ${GPU_MEM_GB} GB (from .env)"
+    echo "GPU memory budget: ${GPU_MEM_GB} GB (from ${_gpu_from})"
 else
     _vram=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1) || true
     if [ "${_vram:-0}" -gt 0 ] 2>/dev/null; then
@@ -441,16 +489,19 @@ else
     else
         # GB10/unified memory (nvidia-smi reports no total): available system
         # RAM minus a reserve for the OS and anything else on the box
-        GPU_MEM_GB=$(( $(free -g | awk '/^Mem:/{print $7}') - 16 ))
+        GPU_MEM_GB=$(( $(_free_gib 7) - 16 ))
     fi
     if [ "$GPU_MEM_GB" -lt 8 ]; then GPU_MEM_GB=8; fi
     echo "GPU_MEM_GB not set — auto-detected budget: ${GPU_MEM_GB} GB (override in .env)"
 fi
 CACHE_QUANT="${CACHE_QUANT:-none}"
 CPU_CACHE_GB="${CPU_CACHE_GB:-0}"
+# Seconds between the server's live " .. " progress lines (0 = off; the
+# end-of-request " == stats" line always prints). See .env.example.
+PROGRESS_EVERY="${PROGRESS_EVERY:-1.0}"
 
 # --- speculative decoding method ---------------------------------------------
-# DRAFT = mtp | none (see .env.example for the trade-offs).
+# DRAFT = mtp | none | dflash2 (see .env.example for the trade-offs).
 DRAFT="${DRAFT:-mtp}"
 DRAFT="$(echo "$DRAFT" | tr '[:upper:]' '[:lower:]')"
 
@@ -458,28 +509,33 @@ DRAFT="$(echo "$DRAFT" | tr '[:upper:]' '[:lower:]')"
 # Set HF_TOKEN=<token> in .env, or `hf auth login`.
 HF_TARGET_REPO="${HF_TARGET_REPO:-Mia-AiLab/Qwen3.8-27B-EXL3-2.0bpw}"
 
-dl_model() {   # dl_model <repo_id> <dir> <label>
-    local repo="$1" dir="$2" label="$3"
+dl_model() {   # dl_model <repo_id> <dir> <label> [revision; default HF_REVISION] [required file; "" = none]
+    local repo="$1" dir="$2" label="$3" revision="${4-${HF_REVISION:-}}" required="${5-tokenizer.json}"
     # "config.json exists" used to be the test, and config.json is one of the
     # first small files a download fetches - so a run that stopped in the
     # middle of a shard was called "already present", and the server then met
     # half a model. tools/downloader.py answers the question properly (every
     # shard the index names, and no .part still waiting) and is what the
     # Windows launcher and the setup page ask as well.
-    if "$PYTHON" -c "import sys; sys.path.insert(0, 'tools'); import downloader; sys.exit(0 if downloader.is_complete(sys.argv[1]) else 1)" "$dir" 2>/dev/null; then
+    if "$PYTHON" -c "import sys; sys.path.insert(0, 'tools'); import downloader; sys.exit(0 if downloader.is_complete(sys.argv[1], tuple(f for f in sys.argv[2:] if f)) else 1)" "$dir" "$required" 2>/dev/null; then
         echo "$label: $dir already present — skipping download."
         return 0
     fi
     echo "$label: fetching from huggingface.co/$repo (resumes if it was interrupted) …"
     mkdir -p "$dir"
-    if [ -n "${HF_REVISION:-}" ]; then
-        "$PYTHON" tools/downloader.py "$repo" "$dir" --revision "$HF_REVISION"
+    if [ -n "$revision" ]; then
+        "$PYTHON" tools/downloader.py "$repo" "$dir" --revision "$revision"
     else
         "$PYTHON" tools/downloader.py "$repo" "$dir"
     fi
 }
 
 dl_model "$HF_TARGET_REPO" "$MODEL_DIR" "target model"
+if [ "$DRAFT" = "dflash2" ]; then
+    # pinned to a commit, and its one weight file to a checksum (tools/dflash2.py)
+    dl_model "$DFLASH2_REPO" "$DFLASH2_DIR" "dflash2 drafter" "$DFLASH2_REVISION" ""
+    "$PYTHON" tools/dflash2.py verify "$DFLASH2_DIR" || exit 1
+fi
 
 if [ "$MODE" = "setup" ]; then
     echo
@@ -527,8 +583,9 @@ fi
 case "$DRAFT" in
     mtp)      cmd+=(--draft_model mtp) ;;
     none)     cmd+=(--draft_model none) ;;
+    dflash2)  cmd+=(--draft_model "$DFLASH2_DIR") ;;
     *)
-        echo "DRAFT must be mtp or none (got: $DRAFT)" >&2
+        echo "DRAFT must be mtp, none or dflash2 (got: $DRAFT)" >&2
         exit 1
         ;;
 esac
@@ -537,6 +594,9 @@ if [ -n "${DRAFT_TOKENS:-}" ] && [ "$DRAFT_TOKENS" != "0" ]; then
 fi
 if [ "$CPU_CACHE_GB" != "0" ]; then
     cmd+=(--cpu_cache_size "$CPU_CACHE_GB")
+fi
+if [ -n "${PROGRESS_EVERY:-}" ]; then
+    cmd+=(--progress_every "$PROGRESS_EVERY")
 fi
 if [ -n "${PARALLEL:-}" ]; then
     cmd+=(--parallel "$PARALLEL")

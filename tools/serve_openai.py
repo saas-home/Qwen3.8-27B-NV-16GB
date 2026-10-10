@@ -3,12 +3,14 @@
 Minimal OpenAI-compatible server for the EXL3 serving target.
 
 Drafter: MTP by default (`-dm mtp`; the draft head lives inside the target
-checkpoint, so there are no separate draft weights to download). Alternative:
-no drafting at all (`-dm none`). The linux/start.sh launcher maps the .env `DRAFT`
-knob onto these. This kit ships no external draft model.
+checkpoint, so there are no separate draft weights to download). Alternatives:
+no drafting at all (`-dm none`), or a separate draft model's directory
+(`-dm <dir>`), which is how DRAFT=dflash2 runs (it needs ExLlamaV3 1.6.0, see
+tools/dflash2.py). The launchers map the .env `DRAFT` knob onto these.
 
-Requires ExLlamaV3 >= 1.4.4: the served quant carries a quantized vision
-tower (vision_bits 3), which only v1.4.4+ decodes correctly.
+Requires ExLlamaV3 >= 1.4.4 (the kit installs 1.6.0): the served quant
+carries a quantized vision tower (vision_bits 3), which only v1.4.4+ decodes
+correctly.
 
 Images: with --vision auto (default) the vision tower is loaded next to the
 text model and OpenAI `image_url` content parts (data: URLs or http(s) URLs)
@@ -24,6 +26,17 @@ Endpoints:
 
 `stream_options: {"include_usage": true}` adds a final chunk carrying the
 token counts, which is how the built-in UI reports tokens/second.
+
+After each request the server prints one ` == stats ...` line: prefill/decode
+tok/s from the engine's per-stage timings (which exclude the queue), wall
+time (which includes it), and speculative-draft acceptance; the same numbers
+are mirrored in GET /health as "last_request".
+
+While a request runs it also prints transient ` .. ` progress lines - prefill
+ingress, decode tok/s - at most one per PROGRESS_EVERY seconds per phase (.env
+knob, default 1 s, 0 = off). They are for tail -f, not the record: the
+` == stats` line stays authoritative, and phases shorter than the interval
+print no live line at all.
 
 Defaults match the serving convention: temperature 0.6, top-k 20, top-p 0.95,
 thinking enabled (reasoning arrives inline in `<think>`), speculative
@@ -48,6 +61,7 @@ Launch (from repo root; 16 GB NVIDIA recipe):
       -m models/Qwen3.8-27B-EXL3-2.0bpw -gs 14.7 -cs 199936 -cq 8,4 --port 8888
 """
 import argparse, asyncio, json, os, re, sys, time, threading, uuid, queue
+import token_budget          # tools/token_budget.py: cache-fit clamp on max_tokens
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from aiohttp import web
 
@@ -166,6 +180,10 @@ stats = {
     "prompt_tokens_total": 0,
     "completion_tokens_total": 0,
     "context_length": None,
+    # Snapshot of the last finished request (see _report_request): what the
+    # per-request " == stats" line said, for GET /health. Additive - the
+    # cumulative counters above are what sparkDash consumes and stay as-is.
+    "last_request": None,
 }
 
 def _bump_stats(prompt=0, completion=0):
@@ -185,6 +203,160 @@ def _result_new_tokens(r):
         return int(ids.shape[-1])
     except Exception:
         return 0
+
+def _rate(n, t):
+    """n / t rounded to 0.1, or None where the rate is undefined. A completion
+    of 0 tokens and a prefill served whole out of the free cache
+    (time_prefill ~ 0) both divide by zero; a '-' in the stats line beats a
+    0.0 or inf that reads like a measurement."""
+    return round(n / t, 1) if n and t and t > 1e-6 else None
+
+
+def _req_tag(rid, streaming):
+    """The request's name in log lines: the caller-minted id (or "request")
+    plus its mode. Shared by the live progress lines and the stats summary so
+    both spell the same request identically; "retry"/"cancelled" suffixes are
+    summary-only, since neither is known while the request is still running."""
+    return (rid or "request") + (" stream" if streaming else "")
+
+
+def _report_request(rid, streaming, prompt_toks, out_toks, attempt, retried,
+                    cancelled):
+    """One ' == stats' line per finished request, plus the same numbers as
+    stats["last_request"] for GET /health.
+
+    Rates come from the engine's EOS result dict, which measures stages on
+    the GPU side: time_prefill = first prefill -> first token, time_generate
+    = first -> last token, time_enqueued = the in-engine queue. None of them
+    include the wait for gen_lock (requests are serialized), which is why
+    `wall` - measured around the whole iterate loop, lock wait included - is
+    the only number that grows under concurrency. A cancelled job never
+    receives the EOS dict (generator.cancel drops it), so after a cancel the
+    per-stage rates print '-' and only `wall` is real.
+
+    cached_tokens is clamped to the prompt length: a requeued long generation
+    resubmits prompt + generated-so-far as one new prompt and all of it hits
+    the cache, which would otherwise claim more cached tokens than the
+    request had prompt tokens. prompt_tokens from the same dict is skipped
+    for the same reason (it counts the requeued input, not the caller's)."""
+    eos = attempt.get("eos") or {}
+    wall = attempt.get("wall") or 0.0
+    cached = min(int(eos.get("cached_tokens") or 0), int(prompt_toks))
+    gen = int(eos.get("new_tokens") or 0) or int(out_toks)
+    prefill_tps = _rate(prompt_toks - cached, eos.get("time_prefill"))
+    decode_tps = _rate(gen, eos.get("time_generate"))
+    queued = eos.get("time_enqueued") or 0.0
+    # absent entirely when no drafter is attached (-dm none)
+    acc = int(eos.get("accepted_draft_tokens") or 0)
+    rej = int(eos.get("rejected_draft_tokens") or 0)
+    drafted = acc + rej
+
+    tag = (_req_tag(rid, streaming)
+           + (" retry" if retried else "")
+           + (" cancelled" if cancelled else ""))
+    parts = [f"prompt {prompt_toks} tok" + (f" ({cached} cached)" if cached else ""),
+             f"completion {out_toks} tok",
+             "prefill " + (f"{prefill_tps} tok/s" if prefill_tps is not None
+                           else "- (fully cached)" if cached else "-"),
+             "decode " + (f"{decode_tps} tok/s" if decode_tps is not None else "-"),
+             f"wall {wall:.2f} s (queue {queued:.2f})"]
+    if drafted:
+        parts.append(f"draft accepted {acc}/{drafted} ({round(100.0 * acc / drafted)}%)")
+    print(f" == stats {tag}: " + ", ".join(parts), flush = True)
+
+    with stats_lock:
+        stats["last_request"] = {
+            "id": rid, "streaming": bool(streaming), "retried": bool(retried),
+            "cancelled": bool(cancelled), "ts": int(time.time()),
+            "prompt_tokens": int(prompt_toks), "cached_prompt_tokens": cached,
+            "completion_tokens": int(out_toks),
+            "prefill_tok_s": prefill_tps, "decode_tok_s": decode_tps,
+            "queue_s": round(queued, 3), "wall_s": round(wall, 3),
+            "draft_accepted": acc, "draft_rejected": rej,
+        }
+
+
+PROGRESS_EVERY = 1.0    # seconds between live progress lines within a phase
+
+
+class _LiveProgress:
+    """Transient ` .. ` lines while ONE generation runs, so tail -f on the log
+    shows where a request is. Additive to the ` == stats` summary, which stays
+    the record: phases shorter than PROGRESS_EVERY print nothing (short chats
+    stay quiet), rates are phase averages over the whole phase (clock started
+    when the generator lock is acquired - the same window the summary's
+    engine-side timings use), and lines are plain one-shot prints - no CR
+    redraws, because tools/logbook.py strips redrawn lines from the file copy,
+    which is where these matter. Nothing polls: the engine's iterate() events
+    are the only wakeups, each carrying a timestamp check that mostly says
+    nothing.
+
+    curr_progress counts free prompt-cache page hits as ingested, so a live
+    prefill rate can read high on a warm cache; the summary's cached_tokens is
+    the corrected number. One instance per run_once() attempt: a greedy
+    tool_choice retry is a real second generation and prints its own lines.
+    No cancel line is needed - the summary already says "cancelled"."""
+
+    def __init__(self, tag, prompt_toks):
+        self.tag = tag
+        self.prompt_toks = prompt_toks   # authoritative total (not max_progress)
+        self.phase = None                # "prefill" | "decode"; set by queued()
+        self.t_phase = 0.0               # start of the current phase
+        self.last = 0.0                  # last live line (throttle)
+        self.curr = 0                    # latest curr_progress (for "prefill done")
+        self.toks = 0                    # decode tokens since phase entry
+        self.printed_prefill = False
+
+    def _say(self, msg):
+        print(f" .. {self.tag}: {msg}", flush = True)
+        self.last = time.time()
+
+    def queued(self, wait):
+        """Called the moment gen_lock is finally held. The generation's clock
+        starts here either way: prefill is the next thing the engine does once
+        the lock is ours, so t_phase set now covers the WHOLE phase - matching
+        the summary's engine-side time_prefill - rather than starting at the
+        first event we happen to see, which would exclude the first, largest
+        chunk and report a duration the summary contradicts. The print itself
+        (the previous owner can be another request or image embeddings) waits
+        for 0.5 s so an idle box stays quiet."""
+        now = time.time()
+        self.phase, self.t_phase, self.last = "prefill", now, now
+        if PROGRESS_EVERY <= 0 or wait < 0.5:
+            return
+        self._say(f"queued {wait:.1f} s for the generator")
+
+    def prefill(self, curr):
+        if PROGRESS_EVERY <= 0:
+            return
+        self.curr = curr
+        now = time.time()
+        if now - self.last >= PROGRESS_EVERY:
+            tps = _rate(curr, now - self.t_phase)
+            self._say(f"prefill {curr}/{self.prompt_toks} tok"
+                      + (f" ({tps} tok/s)" if tps is not None else ""))
+            self.printed_prefill = True
+
+    def decode(self, n):
+        if PROGRESS_EVERY <= 0:
+            return
+        now = time.time()
+        if self.phase != "decode":
+            # First decode token = prefill is over. Only a prefill long enough
+            # to have printed gets a closing line; a short or fully cached one
+            # said nothing and must not start now.
+            if self.phase == "prefill" and self.printed_prefill:
+                self._say(f"prefill done, {self.curr} tok "
+                          f"in {now - self.t_phase:.1f} s")
+            self.phase, self.t_phase, self.last = "decode", now, now
+            self.toks = n
+            return
+        self.toks += n
+        if now - self.last >= PROGRESS_EVERY:
+            tps = _rate(self.toks, now - self.t_phase)
+            self._say(f"decoding, {self.toks} tok"
+                      + (f" ({tps} tok/s)" if tps is not None else ""))
+
 
 TOOL_CALL_OPEN = "<tool_call>"
 TOOL_CALL_CLOSE = "</tool_call>"
@@ -699,9 +871,10 @@ def generate_full(generator, tokenizer, messages, max_tokens, temperature,
                   min_p = 0.0, presence_penalty = 0.0, frequency_penalty = 0.0,
                   repetition_penalty = 1.0, dry_multiplier = 0.0, dry_base = 1.75,
                   dry_allowed_length = 2, dry_range = 0, temp_last = False,
-                  logit_bias = None):
+                  logit_bias = None, rid = None, streaming = False):
     """Blocking generation; returns (text, tool_calls, finish, p_toks, o_toks,
-    reasoning, content)."""
+    reasoning, content). rid/streaming only label the per-request stats line
+    (see _report_request); defaulted so existing callers are unaffected."""
     schemas = build_tool_schemas(tools)
     tools, directive = tool_choice_directive(tool_choice, tools)
     if directive:
@@ -748,35 +921,24 @@ def generate_full(generator, tokenizer, messages, max_tokens, temperature,
             enable_thinking = enable_thinking, tools = tools,
             **template_effort(tokenizer, reasoning_effort))
     prompt_toks = int(input_ids.shape[-1])
+    # The engine prices a job as prompt + max_new_tokens against the whole KV
+    # cache; ask for less than what is left rather than be refused
+    # (tools/token_budget.py).
     max_total = getattr(generator, "max_total_tokens", None)
     if max_total is None and hasattr(generator, "pagetable"):
         max_total = getattr(generator.pagetable, "max_pages", 0) * 256
-    if max_total is None:
-        max_total = stats.get("context_length")
-
-    if max_total and prompt_toks >= max_total:
-        raise ValueError(
-            f"Prompt length ({prompt_toks} tokens) exceeds context cache capacity ({max_total} tokens)"
-        )
-
-    num_draft = getattr(generator, "num_draft_tokens", 0) or 0
-    if max_total:
-        avail = max(1, max_total - prompt_toks - 2 - num_draft)
-        effective_max_tokens = min(max_tokens, avail)
-        if effective_max_tokens < max_tokens:
-            print(f" -- context headroom: clamping max_tokens {max_tokens} -> {effective_max_tokens} "
-                  f"(prompt={prompt_toks}, cache={max_total})", flush = True)
-    else:
-        effective_max_tokens = max_tokens
-
+    cache_capacity = max_total or stats.get("context_length")
+    effective_max_tokens = token_budget.clamp_max_tokens(
+        prompt_toks, max_tokens, cache_capacity)
     from exllamav3.generator.sampler.presets import ComboSampler
     from exllamav3 import Job
     forced_choice = tool_choice not in (None, "auto", "none")
     reason = "max_new_tokens"
     text = ""
+    attempt = {}   # metrics of the run that produced the reply: {"eos": {...}, "wall": s}
 
     def run_once():
-        nonlocal text, reason
+        nonlocal text, reason, attempt
         text = ""
         reason = "max_new_tokens"
         sampler = ComboSampler(
@@ -800,7 +962,11 @@ def generate_full(generator, tokenizer, messages, max_tokens, temperature,
                   sampler = sampler, seed = seed,
                   embeddings = embeddings)
         prefill_seen = 0
+        eos = {}      # engine per-stage timings, filled from the final EOS result
+        live = _LiveProgress(_req_tag(rid, streaming), prompt_toks)
+        t0 = time.time()   # before the lock/queue: wall must include waiting for it
         if batch_worker is not None:
+            live.queued(time.time() - t0)
             q = batch_worker.enqueue(job)
             while True:
                 if should_stop is not None and should_stop():
@@ -817,11 +983,14 @@ def generate_full(generator, tokenizer, messages, max_tokens, temperature,
 
                 if r.get("stage") == "prefill":
                     curr = int(r.get("curr_progress") or 0)
+                    live.prefill(curr)
                     if curr > prefill_seen:
                         _bump_stats(prompt=curr - prefill_seen)
                         prefill_seen = curr
                 elif _result_new_tokens(r):
-                    _bump_stats(completion=_result_new_tokens(r))
+                    n = _result_new_tokens(r)
+                    _bump_stats(completion=n)
+                    live.decode(n)
 
                 chunk = r.get("text", "")
                 if chunk:
@@ -831,9 +1000,19 @@ def generate_full(generator, tokenizer, messages, max_tokens, temperature,
 
                 if r.get("eos"):
                     reason = r.get("eos_reason", reason)
+                    eos = {
+                        "time_prefill": float(r.get("time_prefill") or 0.0),
+                        "time_generate": float(r.get("time_generate") or 0.0),
+                        "time_enqueued": float(r.get("time_enqueued") or 0.0),
+                        "new_tokens": int(r.get("new_tokens") or 0),
+                        "cached_tokens": int(r.get("cached_tokens") or 0),
+                        "accepted_draft_tokens": int(r.get("accepted_draft_tokens") or 0),
+                        "rejected_draft_tokens": int(r.get("rejected_draft_tokens") or 0),
+                    }
                     break
         else:
             with gen_lock:
+                live.queued(time.time() - t0)
                 generator.enqueue(job)
                 while generator.num_remaining_jobs():
                     if should_stop is not None and should_stop():
@@ -843,11 +1022,14 @@ def generate_full(generator, tokenizer, messages, max_tokens, temperature,
                     for r in generator.iterate():
                         if r.get("stage") == "prefill":
                             curr = int(r.get("curr_progress") or 0)
+                            live.prefill(curr)
                             if curr > prefill_seen:
                                 _bump_stats(prompt=curr - prefill_seen)
                                 prefill_seen = curr
                         elif _result_new_tokens(r):
-                            _bump_stats(completion=_result_new_tokens(r))
+                            n = _result_new_tokens(r)
+                            _bump_stats(completion=n)
+                            live.decode(n)
                         chunk = r.get("text", "")
                         if chunk:
                             text += chunk
@@ -855,23 +1037,43 @@ def generate_full(generator, tokenizer, messages, max_tokens, temperature,
                                 on_text(chunk)
                         if r.get("eos"):
                             reason = r.get("eos_reason", reason)
+                            eos = {
+                                "time_prefill": float(r.get("time_prefill") or 0.0),
+                                "time_generate": float(r.get("time_generate") or 0.0),
+                                "time_enqueued": float(r.get("time_enqueued") or 0.0),
+                                "new_tokens": int(r.get("new_tokens") or 0),
+                                "cached_tokens": int(r.get("cached_tokens") or 0),
+                                "accepted_draft_tokens": int(r.get("accepted_draft_tokens") or 0),
+                                "rejected_draft_tokens": int(r.get("rejected_draft_tokens") or 0),
+                            }
 
         if reason != "cancelled" and prefill_seen < prompt_toks:
             _bump_stats(prompt=prompt_toks - prefill_seen)
+        attempt = {"eos": eos, "wall": time.time() - t0}
         return job
 
+    req_t0 = time.time()
+    retried = False
+    cached_toks = 0
     with concurrency_semaphore:
-        job = run_once()
-        # Forced tool_choice is a prompt nudge; at temperature > 0 the model can
-        # occasionally skip the call. One greedy retry makes it deterministic -
-        # but not after a cancel, or Stop would start a second generation.
-        if reason != "cancelled" and forced_choice and not parse_tool_calls(text, schemas)[1]:
-            temperature = 0.0
+        try:
             job = run_once()
-    seq = job.sequences[0]
-    out_toks = int(seq.sequence_ids.seq_len - prompt_toks)
-    cached_pages = getattr(job, "cached_pages", 0)
-    cached_toks = min(cached_pages * 256, prompt_toks)
+            if reason != "cancelled" and forced_choice and not parse_tool_calls(text, schemas)[1]:
+                temperature = 0.0
+                job = run_once()
+                retried = True
+        except Exception as e:
+            print(f" == stats {_req_tag(rid, streaming)} failed after "
+                  f"{time.time() - req_t0:.2f} s: {type(e).__name__}: {e}", flush = True)
+            raise
+        if retried:
+            attempt["wall"] = time.time() - req_t0
+        seq = job.sequences[0]
+        out_toks = int(seq.sequence_ids.seq_len - prompt_toks)
+        cached_pages = getattr(job, "cached_pages", 0)
+        cached_toks = min(cached_pages * 256, prompt_toks)
+        _report_request(rid, streaming, prompt_toks, out_toks, attempt, retried,
+                        reason == "cancelled")
     content, calls = parse_tool_calls(text, schemas)
     if calls:
         finish = "tool_calls"
@@ -936,6 +1138,7 @@ async def health(request):
             "prompt_tokens_total": stats["prompt_tokens_total"],
             "completion_tokens_total": stats["completion_tokens_total"],
             "context_length": stats["context_length"],
+            "last_request": stats.get("last_request"),
             "vision": vision["model"] is not None,
         })
 
@@ -944,7 +1147,7 @@ def parse_request(body):
     messages = body.get("messages")
     if not messages or not isinstance(messages, list):
         return None, "`messages` (list) is required"
-    default_max = int(os.environ.get("MAX_TOKENS", 65536))
+    default_max = int(os.environ.get("MAX_TOKENS", token_budget.DEFAULT_MAX_TOKENS))
     max_tokens = int(body.get("max_tokens") or
                      body.get("max_completion_tokens") or default_max)
     temp_val = body.get("temperature")
@@ -988,7 +1191,6 @@ def parse_request(body):
             logit_bias = {int(k): float(v) for k, v in raw_lb.items()}
         except (ValueError, TypeError):
             logit_bias = None
-
     seed = body.get("seed")
     tools = body.get("tools") or None
     stop = body.get("stop")
@@ -1062,6 +1264,9 @@ async def chat_completions(request):
 
     import asyncio
     if not req["stream"]:
+        # Minted before generation so the per-request stats line inside
+        # generate_full can name the request; the response reuses it.
+        cid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         try:
             text, calls, finish, ptoks, otoks, reasoning, content, cached_toks = await asyncio.to_thread(
                 generate_full, generator, tokenizer, req["messages"],
@@ -1078,7 +1283,8 @@ async def chat_completions(request):
                 dry_allowed_length = req["dry_allowed_length"],
                 dry_range = req["dry_range"],
                 temp_last = req["temp_last"],
-                logit_bias = req["logit_bias"])
+                logit_bias = req["logit_bias"],
+                rid = cid)
         except AssertionError as e:
             return web.json_response(
                 {"error": {"message": f"context/cache: {e}", "type": "invalid_request_error"}},
@@ -1100,7 +1306,7 @@ async def chat_completions(request):
         if cached_toks > 0:
             usage["prompt_tokens_details"] = {"cached_tokens": cached_toks}
         return web.json_response({
-            "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+            "id": cid,
             "object": "chat.completion", "created": int(time.time()),
             "model": req["model_id"],
             "choices": [{"index": 0, "message": msg, "finish_reason": finish}],
@@ -1150,7 +1356,8 @@ async def chat_completions(request):
                     dry_allowed_length = req["dry_allowed_length"],
                     dry_range = req["dry_range"],
                     temp_last = req["temp_last"],
-                    logit_bias = req["logit_bias"])
+                    logit_bias = req["logit_bias"],
+                    rid = cid, streaming = True)
                 loop.call_soon_threadsafe(
                     queue.put_nowait,
                     ("done", (calls, finish, reasoning, content, ptoks, otoks, cached_toks)))
@@ -1438,7 +1645,7 @@ def mount_landing(app, args):
 
 
 def main():
-    global MODEL_DIR, DRAFT_DIR, PORT, MODEL_ID, DEFAULT_TEMPERATURE, DEFAULT_TOP_P, DEFAULT_TOP_K
+    global MODEL_DIR, DRAFT_DIR, PORT, MODEL_ID, PROGRESS_EVERY, DEFAULT_TEMPERATURE, DEFAULT_TOP_P, DEFAULT_TOP_K
     global DEFAULT_MIN_P, DEFAULT_PRESENCE_PENALTY, DEFAULT_FREQUENCY_PENALTY, DEFAULT_REPETITION_PENALTY
     global DEFAULT_DRY_MULTIPLIER, DEFAULT_DRY_BASE, DEFAULT_DRY_ALLOWED_LENGTH, DEFAULT_DRY_RANGE, DEFAULT_TEMP_LAST
     _quiet_triton()
@@ -1446,8 +1653,8 @@ def main():
     ap.add_argument("-m", "--model", default = MODEL_DIR)
     ap.add_argument("-dm", "--draft_model", default = DRAFT_DIR,
                     help = "'mtp' for MTP drafting (head inside the "
-                           "main checkpoint: no extra weights, much smaller KV footprint) "
-                           "or 'none' to disable drafting")
+                           "main checkpoint: no extra weights, much smaller KV footprint), "
+                           "a draft model's directory, or 'none' to disable drafting")
     ap.add_argument("-dt", "--draft_tokens", type = int, default = int(os.environ.get("DRAFT_TOKENS", 0)),
                     help = "Number of speculative draft tokens per pass (e.g. 2, default: 4 for MTP)")
     ap.add_argument("-gs", "--grid_size", type = float, default = 14.7,
@@ -1517,6 +1724,10 @@ def main():
                     help = "Strip internal <think>...</think> tags from prior conversational history to save context tokens (default: True)")
     ap.add_argument("--reasoning-preserve", dest = "no_reasoning_preserve", action = "store_false",
                     help = "Preserve internal <think>...</think> tags from prior conversational history")
+    ap.add_argument("--progress_every", type = float, default = 1.0,
+                    help = "seconds between live ' .. ' progress lines per "
+                           "phase while a request runs; 0 disables them (the "
+                           "end-of-request ' == stats' line always prints)")
     args = ap.parse_args()
     if args.no_reasoning_preserve is not None:
         os.environ["NO_REASONING_PRESERVE"] = "1" if args.no_reasoning_preserve else "0"
@@ -1533,6 +1744,7 @@ def main():
     DEFAULT_DRY_RANGE = args.dry_range
     DEFAULT_TEMP_LAST = args.temp_last
     MODEL_ID = (args.model_id or os.path.basename(os.path.normpath(args.model))).strip().lower() or MODEL_ID
+    PROGRESS_EVERY = args.progress_every
     global batch_worker, concurrency_semaphore, PARALLEL
     PARALLEL = int(getattr(args, "parallel", None) or os.environ.get("PARALLEL", 2))
     concurrency_semaphore = threading.Semaphore(PARALLEL)
