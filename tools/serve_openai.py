@@ -354,14 +354,26 @@ def build_model(argv, use_draft = True):
     if use_draft:
         model, config, cache, tokenizer, draft_model, draft_config, draft_cache = \
             model_init.init(args, progress = True)
-        generator = Generator(
-            model, cache, tokenizer,
-            draft_model = draft_model, draft_cache = draft_cache,
+        gkwargs = dict(
             cpu_cache_size = ccs_bytes,
-            num_draft_tokens = dt,
             max_batch_size = ambs,
             max_chunk_size = chunk_size,
         )
+        if draft_model:
+            generator = Generator(
+                model, cache, tokenizer,
+                draft_model = draft_model, draft_cache = draft_cache,
+                num_draft_tokens = dt,
+                **gkwargs
+            )
+        else:
+            if getattr(args, "ngram_match_min", 0):
+                gkwargs["ngram_match_min"] = args.ngram_match_min
+                gkwargs["num_draft_tokens"] = getattr(args, "num_draft_tokens", None) or dt
+            generator = Generator(
+                model, cache, tokenizer,
+                **gkwargs
+            )
     else:
         model, config, cache, tokenizer = model_init.init(args, progress = True)
         generator = Generator(
@@ -936,6 +948,7 @@ async def health(request):
             "prompt_tokens_total": stats["prompt_tokens_total"],
             "completion_tokens_total": stats["completion_tokens_total"],
             "context_length": stats["context_length"],
+            "draft": stats.get("draft", "none"),
             "vision": vision["model"] is not None,
         })
 
@@ -1445,11 +1458,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-m", "--model", default = MODEL_DIR)
     ap.add_argument("-dm", "--draft_model", default = DRAFT_DIR,
-                    help = "'mtp' for MTP drafting (head inside the "
-                           "main checkpoint: no extra weights, much smaller KV footprint) "
+                    help = "'mtp' for MTP drafting, 'ngram' for n-gram speculative decoding, "
                            "or 'none' to disable drafting")
     ap.add_argument("-dt", "--draft_tokens", type = int, default = int(os.environ.get("DRAFT_TOKENS", 0)),
                     help = "Number of speculative draft tokens per pass (e.g. 2, default: 4 for MTP)")
+    ap.add_argument("--ngram_min", type = int, default = int(os.environ.get("NGRAM_MIN", 0)),
+                    help = "Minimum n-gram match length for speculative drafting (e.g. 2, default: 0 disabled)")
+    ap.add_argument("--ngram_tokens", type = int, default = int(os.environ.get("NGRAM_TOKENS", 0)),
+                    help = "Number of draft tokens per n-gram match (e.g. 4, default: 0)")
     ap.add_argument("-gs", "--grid_size", type = float, default = 14.7,
                     help = "GPU memory budget in GB (autosplit + process cap). "
                            "14.7 is the 16 GB-card recipe")
@@ -1539,7 +1555,14 @@ def main():
     _cap_process_vram(args.grid_size)
     _draft = args.draft_model.lower()
     use_mtp = _draft == "mtp"
-    use_draft = _draft not in ("none", "", "-")
+    use_ngram = _draft == "ngram" or (_draft not in ("none", "", "-") and args.ngram_min > 0)
+    use_draft = _draft not in ("none", "", "-", "ngram")
+    if use_ngram:
+        if args.ngram_min == 0:
+            args.ngram_min = int(os.environ.get("NGRAM_MIN", 2)) or 2
+        if args.ngram_tokens == 0:
+            args.ngram_tokens = int(os.environ.get("NGRAM_TOKENS", 0)) or args.draft_tokens or 4
+
     argv = ["-m", args.model,
             "-gs", str(args.grid_size), "-cs", str(args.cache_size),
             "-ambs", str(PARALLEL)]
@@ -1553,13 +1576,18 @@ def main():
         argv += ["-ccs", str(args.cpu_cache_size)]
     if getattr(args, "draft_tokens", 0) > 0:
         argv += ["-dt", str(args.draft_tokens)]
+    if use_ngram:
+        argv += ["-ngram", str(args.ngram_min), "-ndt", str(args.ngram_tokens)]
 
     tokens_msg = f" ({args.draft_tokens} tokens/pass)" if getattr(args, "draft_tokens", 0) > 0 else ""
+    ngram_msg = f" (min={args.ngram_min}, tokens={args.ngram_tokens})" if use_ngram else ""
     print(f" == loading {args.model}"
           + (f" + MTP head{tokens_msg}" if use_mtp else
-             (f" + draft {args.draft_model}{tokens_msg}" if use_draft else " (no draft)"))
+             (f" + draft {args.draft_model}{tokens_msg}" if use_draft else
+              (f" + n-gram drafting{ngram_msg}" if use_ngram else " (no draft)")))
           + " ...", flush = True)
-    generator, tokenizer, config = build_model(argv, use_draft = use_draft)
+    generator, tokenizer, config = build_model(argv, use_draft = (use_draft or use_ngram))
+    stats["draft"] = "ngram" if use_ngram else ("mtp" if use_mtp else "none")
     batch_worker = BatchWorker(generator)
     print(f" == parallel concurrency: up to {PARALLEL} requests generating simultaneously", flush = True)
     stats["context_length"] = int(args.cache_size)
@@ -1600,6 +1628,8 @@ def main():
             f"  model: {MODEL_ID}"[:inner],
             "  OpenAI-compatible  |  API key: local",
             f"  Concurrency: {PARALLEL} parallel generation slots",
+            (f"  Draft: n-gram (min={args.ngram_min}, tokens={args.ngram_tokens})" if use_ngram else
+             ("  Draft: MTP head" if use_mtp else "  Draft: off")),
             ("  Images: ON  (max %.1f MP per image)" % (vision["max_pixels"] / 1e6))
             if vision["model"] is not None else "  Images: off (text only)",
             (f"  Chat: http://127.0.0.1:{args.harness_port}/  (harness)"[:inner]

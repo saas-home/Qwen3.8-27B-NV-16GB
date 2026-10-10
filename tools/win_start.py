@@ -1341,8 +1341,8 @@ def server_command(cfg: dict[str, str]):
             gpu_mem = "14.7"
         info(f"VRAM budget  {gpu_mem} GB (auto)   context  {context}")
 
-    if draft not in ("mtp", "none"):
-        die(f"DRAFT must be mtp or none (got: {draft})")
+    if draft not in ("mtp", "ngram", "none"):
+        die(f"DRAFT must be mtp, ngram or none (got: {draft})")
 
     # KV cache format: integer bits
     cache_quant = cache_quant.strip().lower().replace(" ", "")
@@ -1368,6 +1368,13 @@ def server_command(cfg: dict[str, str]):
         "--grid_size", gpu_mem,
         "--draft_model", draft,
     ]
+    if cfg.get("DRAFT_TOKENS") and str(cfg.get("DRAFT_TOKENS")) != "0":
+        cmd.extend(["--draft_tokens", str(cfg["DRAFT_TOKENS"])])
+    if draft == "ngram":
+        if cfg.get("NGRAM_MIN") and str(cfg.get("NGRAM_MIN")) != "0":
+            cmd.extend(["--ngram_min", str(cfg["NGRAM_MIN"])])
+        if cfg.get("NGRAM_TOKENS") and str(cfg.get("NGRAM_TOKENS")) != "0":
+            cmd.extend(["--ngram_tokens", str(cfg["NGRAM_TOKENS"])])
     if cache_quant != "none":
         cmd.extend(["--cache_quant", cache_quant])
     if cpu_cache not in ("0", "0.0", ""):

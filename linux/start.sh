@@ -526,14 +526,23 @@ if [ "$CACHE_QUANT" != "none" ]; then
 fi
 case "$DRAFT" in
     mtp)      cmd+=(--draft_model mtp) ;;
+    ngram)    cmd+=(--draft_model ngram) ;;
     none)     cmd+=(--draft_model none) ;;
     *)
-        echo "DRAFT must be mtp or none (got: $DRAFT)" >&2
+        echo "DRAFT must be mtp, ngram or none (got: $DRAFT)" >&2
         exit 1
         ;;
 esac
 if [ -n "${DRAFT_TOKENS:-}" ] && [ "$DRAFT_TOKENS" != "0" ]; then
     cmd+=(--draft_tokens "$DRAFT_TOKENS")
+fi
+if [ "$DRAFT" = "ngram" ]; then
+    if [ -n "${NGRAM_MIN:-}" ] && [ "$NGRAM_MIN" != "0" ]; then
+        cmd+=(--ngram_min "$NGRAM_MIN")
+    fi
+    if [ -n "${NGRAM_TOKENS:-}" ] && [ "$NGRAM_TOKENS" != "0" ]; then
+        cmd+=(--ngram_tokens "$NGRAM_TOKENS")
+    fi
 fi
 if [ "$CPU_CACHE_GB" != "0" ]; then
     cmd+=(--cpu_cache_size "$CPU_CACHE_GB")
