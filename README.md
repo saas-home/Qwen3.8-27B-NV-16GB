@@ -199,6 +199,16 @@ SIMPLEX_HARNESS_PORT=3080
 > ./linux/simplex doctor          # Run system diagnostic checks
 > ```
 
+### 🔧 Linux Troubleshooting
+
+| symptom | what to do |
+| --- | --- |
+| `bash: ./linux/start.sh: Permission denied` | `chmod +x linux/*.sh linux/simplex`, or call it as `bash linux/start.sh`. |
+| `$'\r': command not found` | The checkout has CRLF endings. Re-clone or run `sed -i 's/\r$//' linux/*.sh linux/simplex`. |
+| Anything else | `./linux/simplex doctor` |
+| `Insufficient VRAM in split for model and cache` | Lower `CONTEXT_SIZE` or `GPU_MEM_GB` in `.env`, or pick a smaller quant profile. |
+| It compiled the engine for 20 minutes | No prebuilt wheel matched your CUDA line, torch version or Python. |
+
 ---
 
 ## 🔌 Connecting Clients & Coding Agents
@@ -324,6 +334,18 @@ Empirical cold-prefill performance with prompt salting active (isolating raw har
 | **~200k** | 200,067 toks | 327.56 s (5.5 min) | **610.8 tok/s** | **29.30 tok/s** | ✅ **PASS** |
 | **~204k (Hardware Cap)** | **203,852 toks** | **337.69 s (5.6 min)** | **603.7 tok/s** | **29.12 tok/s** | ✅ **PASS** |
 
+### 📊 Per-Request Stats & Telemetry
+
+The server logs detailed request statistics to the console and to `logs/`:
+While a request **runs**, transient ` .. ` progress lines appear (controlled by `PROGRESS_EVERY` in `.env`). When it **finishes**, a ` == stats` summary line reports:
+- **`prefill tok/s`**: prompt ingestion speed (excluding cached prefix hits).
+- **`decode tok/s`**: sustained token generation speed.
+- **`wall`**: total wall-clock time including queuing.
+- **`queue`**: time waiting for a generation slot.
+- **`draft accepted`**: speculative acceptance rate when drafting is enabled.
+
+These statistics are also available in `GET /health` under `last_request`.
+
 <details>
 <summary>📋 <strong>Click to view Full 14-Stage Capability Scorecard (14/14 PASS)</strong></summary>
 
@@ -355,6 +377,24 @@ Empirical cold-prefill performance with prompt salting active (isolating raw har
 For in-depth mathematical derivations, asymmetric quantization accuracy proofs across 16-hop confusable pointer chasing, and head-to-head empirical evaluations against `llama.cpp` (`llama-server`), see:
 
 👉 **[Qwen3.8-27B-NV-16GB-Optimization-Whitepaper.md](Qwen3.8-27B-NV-16GB-Optimization-Whitepaper.md)**
+
+---
+
+## 🚀 Optional: `DRAFT=dflash2` (32 GB cards)
+
+`DRAFT=dflash2` replaces the MTP head with a separate drafter, a DFlash2 block-diffusion draft model. It is off by default. With `DRAFT` unset, `mtp` or `none` nothing below applies: same engine (1.6.0), same `.venv`, same flags, same downloads.
+
+```bash
+DRAFT=dflash2        # in .env, then ./linux/start.sh (Windows: see limits below)
+DRAFT=mtp            # in .env (or delete the line) to go back; nothing is reinstalled
+```
+
+What it does:
+- **Same environment:** The engine and `transformers` live in the unified `.venv`, so switching `DRAFT` reinstalls nothing.
+- **Drafter:** [`r0b0tlab/Qwen3.8-27B-DFlash2-EXL3-4.00bpw`](https://huggingface.co/r0b0tlab/Qwen3.8-27B-DFlash2-EXL3-4.00bpw) (~1.25 GB) into `models/`, checked against sha256 `e278f218318565562af07fc333045e411ffa0d83523f8224fc8c2d24d5a68223` on startup.
+- **Refused on small cards:** Below 30 GiB of VRAM it halts before download, preventing out-of-memory crashes.
+
+*Credits:* [turboderp](https://github.com/turboderp-org) for ExLlamaV3 DFlash2 support, [z-lab](https://github.com/z-lab/dflash) for DFlash2, and [r0b0tlab](https://huggingface.co/r0b0tlab) for the EXL3 4.00 bpw quant.
 
 ---
 
