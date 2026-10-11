@@ -53,6 +53,7 @@ WINDOWS = os.name == "nt"
 if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
+import dflash2
 import dsh
 
 
@@ -128,7 +129,9 @@ def env_int(cfg: dict, key: str, default: int) -> int:
 
 
 def venv_python() -> Path:
-    return ROOT / ".venv" / ("Scripts/python.exe" if WINDOWS else "bin/python")
+    # .venv (see tools/dflash2.py)
+    venv = dflash2.venv_name(read_env().get("DRAFT"))
+    return ROOT / venv / ("Scripts/python.exe" if WINDOWS else "bin/python")
 
 
 def any_python() -> str:
@@ -772,8 +775,10 @@ def cmd_doctor(a) -> int:
         ok("python version", platform.python_version())
 
     vp = venv_python()
+    venv = dflash2.venv_name(cfg.get("DRAFT"))
+    engine = dflash2.engine_version(cfg.get("DRAFT"))
     if not vp.is_file():
-        bad("the kit's .venv", "run: simplex setup")
+        bad(f"the kit's {venv}", "run: simplex setup")
     else:
         probe = subprocess.run(
             [str(vp), "-c",
@@ -782,7 +787,7 @@ def cmd_doctor(a) -> int:
              "try:\n"
              "  from exllamav3.version import __version__ as v; d['engine']=v\n"
              "except Exception as e: d['engine']=None\n"
-             "for m in ('torch','aiohttp','huggingface_hub','PIL'):\n"
+             f"for m in {('torch','aiohttp','huggingface_hub','PIL') + dflash2.extra_packages(cfg.get('DRAFT'))!r}:\n"
              "  try:\n"
              "    __import__(m); d[m]=True\n"
              "  except Exception: d[m]=False\n"
@@ -792,17 +797,16 @@ def cmd_doctor(a) -> int:
             info = json.loads(probe.stdout.strip().splitlines()[-1])
         except Exception:                                   # noqa: BLE001
             info = {}
-        import wheels
-        expected_ver = wheels.ENGINE_VERSION
+        import re
         engine_ver = info.get("engine")
-        if engine_ver and tuple(map(int, re.findall(r"\d+", engine_ver)[:3])) >= (1, 4, 4):
-            note = f"{engine_ver} (configured: {expected_ver})" if engine_ver != expected_ver else engine_ver
+        if engine_ver and (engine_ver == engine or tuple(map(int, re.findall(r"\d+", engine_ver)[:3])) >= (1, 4, 4)):
+            note = f"{engine_ver} (configured: {engine})" if engine_ver != engine else engine_ver
             ok("exllamav3", note)
         elif engine_ver:
-            bad("exllamav3 version", f"{engine_ver} (configured: {expected_ver}, needs >= 1.4.4)")
+            bad("exllamav3 version", f"{engine_ver} (this kit needs {engine})")
         else:
-            bad("exllamav3", "not importable in .venv - run: simplex setup")
-        for mod in ("torch", "aiohttp", "huggingface_hub"):
+            bad("exllamav3", f"not importable in {venv} - run: simplex setup")
+        for mod in ("torch", "aiohttp", "huggingface_hub", *dflash2.extra_packages(cfg.get("DRAFT"))):
             (ok if info.get(mod) else bad)(mod, "" if info.get(mod) else "missing")
         if not info.get("PIL"):
             warn("pillow", "missing - images will be off")
