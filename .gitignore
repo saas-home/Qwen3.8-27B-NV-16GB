@@ -9,7 +9,7 @@
 # Model weights. 100+ GB, fetched on first start from the repo named in .env.
 models/
 
-# The Python environment start.bat builds, and anything compiled into it.
+# The Python environment, and anything compiled into it.
 .venv/
 .venv-dflash2/
 __pycache__/
@@ -20,7 +20,7 @@ __pycache__/
 wheels/*
 !wheels/README.md
 
-# Vendored third-party applications - a 300 MB portable .exe is not source.
+# Vendored third-party applications.
 apps/
 
 # Runtime state: logs and marker files.
@@ -41,10 +41,6 @@ logs/
 # is a running log with dated sections and half of it about a UI that moved
 # out. It stays on the machine it was written on.
 HANDOFF.md
-
-# Made by a maintainer to get back to a new-user state. It deletes the weights,
-# the venv and the shortcuts, so it is not something to hand a stranger.
-reset_new_user.bat
 
 # Staging for deletion, and scratch that is nobody else's business.
 _to_delete/
@@ -106,8 +102,6 @@ tests/results/
 dist/
 build/
 
-# Windows shortcuts. shortcuts.py writes these to the Start Menu and Desktop,
-# not here, but a hand-made one in the tree should not be committed.
 *.lnk
 
 # Weights, in case MODEL_DIR is ever pointed somewhere other than models/.

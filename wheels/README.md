@@ -19,25 +19,23 @@ A wheel is only used when its tags match the Python that Simplex is installing
 into - so a `cp313` wheel is ignored by a `cp312` environment, and nothing can
 be installed into the wrong interpreter by accident. Check what would be used:
 
-    .venv\Scripts\python.exe tools\wheels.py
+    .venv/bin/python tools/wheels.py
 
 That prints the venv's tags, the torch version and CUDA line it found, the
 release wheel it would pull, and anything already sitting in this folder.
 
-| package          | why |
-|------------------|-----|
-| `exllamav3`      | the engine. Building it is the slow, fragile step. |
-| `triton-windows` | GPU kernels the engine imports. Normally comes from PyPI. |
+| package     | why |
+|-------------|-----|
+| `exllamav3` | the engine. Building it is the slow, fragile step. |
 
 ## Building the engine wheel yourself
 
-On a machine that *does* have the CUDA Toolkit and the Visual Studio C++
-workload, once per Python version:
+On a machine that *does* have the CUDA Toolkit and a C++ compiler (g++ / clang++):
 
-    py -3.13 -m venv build-env
-    build-env\Scripts\python -m pip install -U pip wheel setuptools ninja
-    build-env\Scripts\python -m pip install torch --extra-index-url https://download.pytorch.org/whl/cu128
-    build-env\Scripts\python -m pip wheel --no-build-isolation --no-deps ^
+    python3 -m venv build-env
+    build-env/bin/python -m pip install -U pip wheel setuptools ninja
+    build-env/bin/python -m pip install torch --extra-index-url https://download.pytorch.org/whl/cu128
+    build-env/bin/python -m pip wheel --no-build-isolation --no-deps \
         git+https://github.com/turboderp-org/exllamav3.git@v1.6.0 -w wheels
 
 The wheel is tied to the torch build the line above installed, so build one per

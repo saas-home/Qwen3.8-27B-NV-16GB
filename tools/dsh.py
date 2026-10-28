@@ -53,10 +53,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-# The version the kit is known to work with. `latest` follows the newest
-# release instead, which is the right setting while dsh is in developer
-# preview and moving fast - and the wrong one when a run has to reproduce.
-DEFAULT_VERSION = "0.1.3-alpha.2"
+# Default to `latest` to track the newest release.
+DEFAULT_VERSION = "latest"
 DEFAULT_PORT = 3080
 
 
@@ -123,7 +121,7 @@ def write_url(root: Path, authenticated: str) -> None:
     path = url_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(authenticated + "\n", encoding="utf-8")
-    try:                                   # best effort; Windows ignores it
+    try:                                   # best effort
         os.chmod(path, 0o600)
     except OSError:
         pass
@@ -604,7 +602,7 @@ def env_value(raw: str) -> str:
 def main() -> int:
     """`python tools/dsh.py [--port N] [--base URL]` - configure and run it.
 
-    The same thing windows\\start.bat / linux/start.sh do after the model is loaded, for when
+    The same thing linux/start.sh does after the model is loaded, for when
     the server is already running and you only want the harness."""
     import argparse
     ap = argparse.ArgumentParser(description="configure and run the DeepSeek Harness")
@@ -642,7 +640,7 @@ def main() -> int:
         row = describe_model(base)
     except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError) as e:
         print(f"  Cannot reach the model server at {base}: {e}", file=sys.stderr)
-        print("  Start it first (windows\\start.bat / ./linux/start.sh), then run this again.",
+        print("  Start it first (./linux/start.sh), then run this again.",
               file=sys.stderr)
         return 1
 
@@ -668,7 +666,7 @@ def main() -> int:
         print(f"  Port {port} is held by something this kit cannot get into: "
               f"either a harness left over from a run that did not shut down, "
               f"or another program.", file=sys.stderr)
-        print(f"  windows\\stop.bat / ./linux/stop.sh clears a leftover harness; DSH_PORT in "
+        print(f"  ./linux/stop.sh clears a leftover harness; DSH_PORT in "
               f".env moves this one out of the way.", file=sys.stderr)
         return 1
 
