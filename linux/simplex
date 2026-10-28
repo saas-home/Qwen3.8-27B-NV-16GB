@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One command for the whole kit:  ./simplex start | stop | status | doctor ...
-# Everything it does lives in tools/cli.py, so Windows and Linux behave alike.
+# Everything it does lives in tools/cli.py.
 set -euo pipefail
 # This script lives in linux/; the kit is its parent.
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"

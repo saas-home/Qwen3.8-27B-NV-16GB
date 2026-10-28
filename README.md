@@ -23,7 +23,7 @@
 
 > [!NOTE]
 > **Fork Attribution:** This project is a production-hardened fork of [`MiaAI-Lab/Qwen3.8-27B-16gb-NVIDIA-GPUs-one-click-install`](https://github.com/MiaAI-Lab/Qwen3.8-27B-16gb-NVIDIA-GPUs-one-click-install) by [Mia's AI Lab](https://x.com/MiaAI_lab).  
-> *For Windows 1-click desktop installers, general multi-GPU configurations, and upstream release notes, visit the [upstream repository](https://github.com/MiaAI-Lab/Qwen3.8-27B-16gb-NVIDIA-GPUs-one-click-install).*
+> *For general multi-GPU configurations and upstream release notes, visit the [upstream repository](https://github.com/MiaAI-Lab/Qwen3.8-27B-16gb-NVIDIA-GPUs-one-click-install).*
 
 ---
 
@@ -385,7 +385,7 @@ For in-depth mathematical derivations, asymmetric quantization accuracy proofs a
 `DRAFT=dflash2` replaces the MTP head with a separate drafter, a DFlash2 block-diffusion draft model. It is off by default. With `DRAFT` unset, `mtp` or `none` nothing below applies: same engine (1.6.0), same `.venv`, same flags, same downloads.
 
 ```bash
-DRAFT=dflash2        # in .env, then ./linux/start.sh (Windows: see limits below)
+DRAFT=dflash2        # in .env, then ./linux/start.sh
 DRAFT=mtp            # in .env (or delete the line) to go back; nothing is reinstalled
 ```
 

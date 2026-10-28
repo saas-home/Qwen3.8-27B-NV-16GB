@@ -1837,7 +1837,7 @@ def main():
         ready_box()
         try:
             while True:
-                await asyncio.sleep(0.5)   # short ticks so Ctrl+C is noticed on Windows
+                await asyncio.sleep(0.5)   # short ticks for prompt signal handling
         finally:
             await runner.cleanup()
 

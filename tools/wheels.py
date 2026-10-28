@@ -1,13 +1,13 @@
 """Prebuilt wheels, so a first run does not need a C++ compiler.
 
 The expensive, fragile part of setup is compiling ExLlamaV3's CUDA kernels:
-it wants the NVIDIA CUDA Toolkit and Visual Studio Build Tools, several GB of
+it wants the NVIDIA CUDA Toolkit and C++ compiler, several GB of
 downloads that have nothing to do with chatting to a model. A wheel built once
 per (Python version x CUDA version) removes all of it.
 
 Sources are tried in this order, and the first that yields a matching wheel wins:
 
-  1. `wheels/` next to windows\\start.bat - what the installer drops in, or what a
+  1. `wheels/` directory - what the installer drops in, or what a
      user copies off a USB stick on a machine with no internet.
   2. The engine's own GitHub release. turboderp-org/exllamav3 attaches a wheel
      per (CUDA line x torch version x Python), so the normal case needs no
@@ -15,8 +15,7 @@ Sources are tried in this order, and the first that yields a matching wheel wins
      exact URL rather than a --find-links page.
   3. WHEEL_INDEX in .env - one or more `pip --find-links` targets (a GitHub
      Releases page, a file share, an internal index).
-  4. PyPI - triton-windows lives there; the kit does not take the engine from it.
-  5. Compiling from source, which is what the kit did before this module.
+  4. Compiling from source, which is what the kit did before this module.
 
 Nothing here trusts a filename blindly: a wheel is only offered to pip when
 its Python tag, ABI tag and platform tag match the interpreter that will run
@@ -96,8 +95,7 @@ def wheel_matches(w: Wheel, tags: dict) -> bool:
     """True when this interpreter could actually import the wheel."""
     plat = (tags.get("plat") or "").lower()
     if w.plat.lower() not in ("any", plat):
-        # win_amd64 wheels are also published as win32/win_amd64 pairs; only an
-        # exact platform match or a pure-python wheel is safe.
+        # Only an exact platform match or a pure-python wheel is safe.
         return False
     abi = w.abi.lower()
     if abi == "abi3":
@@ -372,25 +370,8 @@ def describe(package: str, tags: dict, cfg: dict, folder: Path = WHEEL_DIR,
 # --------------------------------------------------------------- toolchain ---
 
 def have_compiler() -> bool:
-    """A source build needs cl.exe (Windows) or a C++ compiler (POSIX)."""
+    """A source build needs a C++ compiler (g++ or clang++)."""
     from shutil import which
-    if sys.platform == "win32":
-        if which("cl"):
-            return True
-        # VS is usually not on PATH until vcvars runs; vswhere tells us anyway
-        vswhere = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / \
-            "Microsoft Visual Studio" / "Installer" / "vswhere.exe"
-        if vswhere.is_file():
-            try:
-                r = subprocess.run(
-                    [str(vswhere), "-latest", "-products", "*", "-requires",
-                     "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-                     "-property", "installationPath"],
-                    capture_output=True, text=True, timeout=30)
-                return bool(r.stdout.strip())
-            except Exception:               # noqa: BLE001
-                return False
-        return False
     return bool(which("g++") or which("clang++"))
 
 
@@ -402,17 +383,16 @@ def have_cuda_toolkit() -> bool:
         v = os.environ.get(key)
         if v and (Path(v) / "bin").is_dir():
             return True
-    base = Path(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA")
-    return base.is_dir() and any(p.is_dir() for p in base.iterdir())
+    return False
 
 
 def source_build_blockers() -> list[str]:
-    """Plain-English list of what a source build is missing, for the setup page."""
+    """Plain-English list of what a source build is missing."""
     out = []
     if not have_compiler():
-        out.append("Visual Studio Build Tools with the \"Desktop development with C++\" workload")
+        out.append("C++ compiler (g++ or clang++)")
     if not have_cuda_toolkit():
-        out.append("NVIDIA CUDA Toolkit")
+        out.append("NVIDIA CUDA Toolkit (nvcc)")
     return out
 
 

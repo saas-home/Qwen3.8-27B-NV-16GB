@@ -3,8 +3,8 @@
 
 The default drafter is the MTP head inside the checkpoint. DRAFT=dflash2 swaps
 it for a separate drafter model. Both run on ExLlamaV3 1.6.0 in the one .venv,
-so changing DRAFT back and forth never reinstalls anything. The two launchers (linux/start.sh, tools/win_start.py) and
-tools/setup_core.py all ask this file instead of each carrying a copy.
+so changing DRAFT back and forth never reinstalls anything. The launcher (linux/start.sh)
+asks this file instead of carrying a copy.
 
 What was measured, and so what is allowed (README, "DFlash2"): one RTX 5090 on
 Linux, the kit's own 4.0 bpw quant at 262144 tokens, `--grid_size 22.8

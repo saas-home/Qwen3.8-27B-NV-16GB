@@ -1,14 +1,14 @@
-# AI Agent Instructions for Qwen3.8-27B One-Click Install Kit
+# AI Agent Instructions for Qwen3.8-27B Linux Deployment Kit
 
 ## Project Overview
 
-This is a serving kit for **Qwen/Qwen3.8-27B** in turboderp's EXL3 quants, designed to run on one consumer NVIDIA GPU (12–32 GB VRAM). It picks a quant that fits the card, installs its own Python environment, downloads weights, serves an **OpenAI-compatible** endpoint, and opens a chat UI. Windows and Linux have identical behavior through a unified `simplex` CLI.
+This is a Linux serving kit for **Qwen/Qwen3.8-27B** in turboderp's EXL3 quants, optimized for Linux deployments on consumer NVIDIA GPUs (12–32 GB VRAM, with special focus on 16 GB cards). It picks a quant that fits the card, installs its own Python environment, downloads weights, serves an **OpenAI-compatible** endpoint, and opens a chat UI.
 
 ## Key Architecture
 
-- **Unified CLI**: `tools/cli.py` implements the `simplex` command used on both systems
-- **Setup flow**: `tools/setup_core.py` contains the setup pipeline; front ends are `linux/setup.sh` and `windows/START-HERE.bat` (web UI)
-- **Start flow**: `linux/start.sh` and `windows/start.bat` load models and serve
+- **Unified CLI**: `tools/cli.py` implements the `simplex` command (`./linux/simplex`)
+- **Setup flow**: `linux/setup.sh` (delegating to `linux/start.sh setup`) installs the environment and fetches weights
+- **Start flow**: `linux/start.sh` loads models and serves
 - **Profile picker**: `tools/profiles.py` detects GPU VRAM and selects the best quant/context/KV-cache combination
 - **Server**: `tools/serve_openai.py` serves the OpenAI-compatible API on `/v1/chat/completions`
 - **Chat UI**: [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) runs as a second Node process on port 3080
@@ -18,13 +18,10 @@ This is a serving kit for **Qwen/Qwen3.8-27B** in turboderp's EXL3 quants, desig
 
 ```
 .
-├── linux/              # Linux scripts: setup.sh, start.sh, stop.sh, simplex
-├── windows/            # Windows scripts: START-HERE.bat, start.bat, stop.bat, simplex.bat
+├── linux/              # Linux scripts: setup.sh, start.sh, stop.sh, simplex, preflight.sh
 ├── tools/              # Core Python implementation
-│   ├── cli.py          # simplex CLI (shared across OS)
+│   ├── cli.py          # simplex CLI
 │   ├── profiles.py     # GPU VRAM profile picker
-│   ├── setup_core.py   # Setup pipeline steps
-│   ├── setup_web.py    # Web setup front-end
 │   ├── serve_openai.py # OpenAI-compatible server
 │   ├── dsh.py          # DeepSeek Harness launcher/configurer
 │   ├── downloader.py   # Resumable weight downloads
@@ -39,16 +36,11 @@ This is a serving kit for **Qwen/Qwen3.8-27B** in turboderp's EXL3 quants, desig
 
 ### Running the kit
 ```bash
-# Linux
+# Direct scripts
 ./linux/setup.sh                # install environment and fetch a model
 ./linux/start.sh                # load a model and serve
 ./linux/start.sh -b             # run in background
 ./linux/stop.sh                 # stop both server and UI
-
-# Windows
-windows\START-HERE.bat          # install, then start
-windows\start.bat               # start an installed model
-windows\stop.bat                # stop both
 
 # Unified CLI (from kit root)
 ./linux/simplex setup           # install the environment and fetch a model
@@ -67,7 +59,6 @@ windows\stop.bat                # stop both
 - `.env` is created from `.env.example` on first run
 - Key knobs: `MODEL_DIR`, `PROFILE`, `CONTEXT_SIZE`, `CACHE_QUANT`, `GPU_MEM_GB`, `VISION`, `DRAFT`, `PORT`, `HOST`, `UI`
 - `.env` is **data, never shell** — parse it as key=value pairs, never `source` or `exec` it
-- CRLF endings are tolerated; strip `\r` when reading
 
 ## Profile Selection (`tools/profiles.py`)
 
@@ -82,13 +73,12 @@ KV cache is **int4** on every profile. The 2.0 bpw baseline uses `CACHE_QUANT=8,
 
 ## Important Pitfalls
 
-1. **Never `source .env`** — it contains values with spaces (e.g., GPU names) and Windows CRLF endings. Parse as key=value.
-2. **Windows VRAM preflight** — Windows silently spills to system RAM when VRAM is insufficient, causing extremely slow performance. The preflight check is critical on Windows.
-3. **No free-VRAM preflight on Linux** — Linux fails with `Insufficient VRAM in split for model and cache`; lower `CONTEXT_SIZE` or `GPU_MEM_GB`.
-4. **Prebuilt wheels** — The engine arrives as prebuilt wheels (cu128/cu132). Source compilation is the fallback for platforms no wheel covers (e.g., aarch64/GB10).
-5. **Node requirement** — DeepSeek Harness requires Node 22.19+. Without Node, `/v1` still serves but the chat UI fails.
-6. **Python 3.11+ required** — 64-bit only. The kit installs its own `.venv`.
-7. **Model downloads are resumable** — closing the window or losing connection costs nothing.
+1. **Never `source .env`** — it contains values with spaces (e.g., GPU names). Parse as key=value.
+2. **Linux VRAM management** — Lower `CONTEXT_SIZE` or `GPU_MEM_GB` if out of VRAM.
+3. **Prebuilt wheels** — The engine arrives as prebuilt wheels (cu128/cu132). Source compilation is the fallback for platforms no wheel covers (e.g., aarch64/GB10).
+4. **Node requirement** — DeepSeek Harness requires Node 22.19+. Without Node, `/v1` still serves but the chat UI fails.
+5. **Python 3.11+ required** — 64-bit only. The kit installs its own `.venv`.
+6. **Model downloads are resumable** — closing the terminal or losing connection costs nothing.
 
 ## Testing and Verification
 
@@ -100,15 +90,14 @@ KV cache is **int4** on every profile. The 2.0 bpw baseline uses `CACHE_QUANT=8,
 
 ## Conventions
 
-- **Cross-platform parity**: `simplex` CLI behavior must be identical on Windows and Linux
-- **No system modifications**: Everything stays inside `.venv/`, `models/`, `logs/`, `apps/`, `.dsh/`
-- **Callbacks over prints**: `setup_core.py` functions report through callbacks; no printing, exiting, or blocking on input
+- **Linux-first**: Built and tested specifically for Linux environments
+- **No system modifications**: Everything stays inside `.venv/`, `models/`, `logs/`, `.dsh/`
 - **Resumable downloads**: `downloader.py` tracks progress and resumes interrupted downloads
 - **Configuration-driven**: `tools/dsh.py` queries the running server for actual model capabilities and configures the harness accordingly
 
 ## Related Documentation
 
-- [README.md](README.md) — Complete user guide for Windows and Linux
+- [README.md](README.md) — Complete user guide
 - [Qwen3.8-27B-NV-16GB-Optimization-Whitepaper.md](Qwen3.8-27B-NV-16GB-Optimization-Whitepaper.md) — Technical whitepaper on 204.8k context optimization & empirical benchmarks
 - [.env.example](.env.example) — Configuration template with detailed comments
 - [tools/wheels.py](tools/wheels.py) — PyTorch and engine wheel resolution
