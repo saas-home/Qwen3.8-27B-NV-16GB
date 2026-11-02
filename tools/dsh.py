@@ -53,8 +53,10 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-# Default to `latest` to track the newest release.
-DEFAULT_VERSION = "latest"
+# The version the kit is known to work with. `latest` follows the newest
+# release instead, which is the right setting while dsh is in developer
+# preview and moving fast - and the wrong one when a run has to reproduce.
+DEFAULT_VERSION = "0.1.3-alpha.2"
 DEFAULT_PORT = 3080
 
 

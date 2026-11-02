@@ -2,7 +2,7 @@
 """DRAFT=dflash2: the opt-in DFlash2 drafter. Everything it needs to know in one place.
 
 The default drafter is the MTP head inside the checkpoint. DRAFT=dflash2 swaps
-it for a separate drafter model. Both run on ExLlamaV3 1.6.0 in the one .venv,
+it for a separate drafter model. Both run on ExLlamaV3 1.6.6 in the one .venv,
 so changing DRAFT back and forth never reinstalls anything. The launcher (linux/start.sh)
 asks this file instead of carrying a copy.
 
@@ -28,11 +28,11 @@ import sys
 from pathlib import Path
 
 DRAFT = "dflash2"
-ENGINE_VERSION = "1.6.0"
+ENGINE_VERSION = "1.6.6"
 VENV_NAME = ".venv"
 
 # Installed next to the kit's own server libraries. 1.4.4 got transformers
-# through its flash-linear-attention requirement; 1.6.0 carries those kernels
+# through its flash-linear-attention requirement; 1.6.6 carries those kernels
 # itself and no longer pulls it in, but its chat template
 # (Tokenizer.hf_chat_template) still imports it - without it every chat request
 # returns HTTP 500. Needed for every DRAFT value, not only dflash2.

@@ -33,9 +33,10 @@ logs/
 # nothing in here is worth tracking - and the credential store must not be.
 .dsh/
 
-# Machine-specific configuration. .env.example is the template that IS
-# tracked; .env itself holds this box's paths, ports and GPU sizes.
-.env
+# .env is tracked: it carries the kit's default configuration, holds no
+# secrets, and ships as the ready-to-run file for a fresh clone. Local
+# variants (.env.local, .env.bak, ...) are machine state and stay ignored
+# (defensive .env.* rule below). .env.example remains the pristine template.
 
 # Working notes, not documentation. The README is what a stranger reads; this
 # is a running log with dated sections and half of it about a UI that moved
@@ -67,6 +68,32 @@ Desktop.ini
 *~
 .idea/
 .vscode/
+
+# Dotfiles that ended up in the repo root (a home-directory copy, not part
+# of the kit). The .env* rules below already cover .env, .env.bak, ... -
+# these cover the rest: shell profiles, editor and tool configs, and the
+# stray key/cert files that must never leave the machine.
+# (Bare names, not directory rules: the repo still carries stray regular
+# files named .idea and .vscode, and `.idea/` does not match a file.)
+.bash_profile
+.bashrc
+.claude
+.gitconfig
+.gitmodules
+.idea
+.mcp.json
+.profile
+.ripgreprc
+.vscode
+.zprofile
+.zshrc
+
+# Private keys and certificates - never tracked, from any path.
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
 
 # ---------------------------------------------------------------------------
 # Defensive rules. Nothing below has ever appeared in this tree; they are here

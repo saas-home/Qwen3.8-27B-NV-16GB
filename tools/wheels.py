@@ -125,8 +125,8 @@ def local_wheels(tags: dict, folder: Path = WHEEL_DIR) -> list[Wheel]:
 
 def find_local(package: str, tags: dict, folder: Path = WHEEL_DIR,
                version: str | None = None) -> Wheel | None:
-    """`version`, when given, keeps only wheels of that release ("1.6.0+cu128..."
-    counts as "1.6.0"); None is every version, as it always was."""
+    """`version`, when given, keeps only wheels of that release ("1.6.6+cu128..."
+    counts as "1.6.6"); None is every version, as it always was."""
     want = re.sub(r"[-_.]+", "-", package).lower()
     hits = [w for w in local_wheels(tags, folder) if w.canonical == want
             and (version is None or w.version.partition("+")[0] == version)]
@@ -152,12 +152,12 @@ def cuda_tag(driver_index_url: str = "") -> str:
 
 # --------------------------------------------------- the engine's release -----
 
-# What turboderp-org/exllamav3 v1.6.0 actually published. Written down rather
+# What turboderp-org/exllamav3 v1.6.6 actually published. Written down rather
 # than discovered, because setup has to be able to say what it will do before
 # it has a network - and because the answer has to be exact.
 #
 # Why exact: the CUDA line and the torch version live in the wheel's *local
-# version* ("1.6.0+cu128.torch2.10.0"), which pip does not match against
+# version* ("1.6.6+cu128.torch2.10.0"), which pip does not match against
 # anything. Point pip at the release with --find-links and it filters on the
 # Python and platform tags only, then takes the highest version string - so a
 # torch 2.10 venv is happily handed the torch2.11 build, and the failure comes
@@ -178,7 +178,7 @@ def get_engine_version() -> str:
                         break
         except Exception:
             pass
-    return (v or "1.6.0").strip()
+    return (v or "1.6.6").strip()
 
 
 ENGINE_PACKAGE = "exllamav3"
@@ -187,7 +187,7 @@ ENGINE_RELEASE = ("https://github.com/turboderp-org/exllamav3/releases/download/
                   f"v{ENGINE_VERSION}/")
 
 # cuda line -> torch version -> the cp tags built for it (same on both platforms).
-# Taken from the v1.6.0 release's asset list. The ROCm wheels in that release are
+# Taken from the v1.6.6 release's asset list. The ROCm wheels in that release are
 # not listed; the kit is NVIDIA only.
 ENGINE_WHEELS: dict[str, dict[str, tuple[str, ...]]] = {
     "cu128": {
@@ -207,7 +207,7 @@ ENGINE_WHEELS: dict[str, dict[str, tuple[str, ...]]] = {
 ENGINE_PLATFORMS = ("win_amd64", "linux_x86_64")
 
 # The previous default, v1.4.4, kept so `wheels.py --engine-version 1.4.4` still
-# resolves (the launchers themselves require 1.6.0). It was built against other torch versions
+# resolves (the launchers themselves require 1.6.6). It was built against other torch versions
 # (it has 2.7, and cu132 carries only 2.11).
 ENGINE_VERSION_LEGACY = "1.4.4"
 ENGINE_WHEELS_LEGACY: dict[str, dict[str, tuple[str, ...]]] = {
@@ -222,6 +222,8 @@ ENGINE_WHEELS_LEGACY: dict[str, dict[str, tuple[str, ...]]] = {
         "2.11.0": ("cp312", "cp313", "cp314"),
     },
 }
+# v1.6.0 published the same (CUDA line x torch x cp) matrix as v1.6.6, so an
+# existing .env pinned to EXL3_VERSION=1.6.0 still resolves against this table.
 ENGINE_TABLES = {ENGINE_VERSION: ENGINE_WHEELS, "1.6.0": ENGINE_WHEELS, ENGINE_VERSION_LEGACY: ENGINE_WHEELS_LEGACY}
 
 

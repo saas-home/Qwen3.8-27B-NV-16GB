@@ -140,7 +140,7 @@ if [ ! -f .env ]; then
     if [ "$MODE" = "setup" ]; then
         # Carry on. Stopping here sent a first-time user who had just run
         # ./setup.sh away to ./start.sh, which is the other door and does not
-        # install anything; win_start.py has always created the file and
+        # install anything; the Windows launcher created the file and
         # continued, so the two systems disagreed on the very first command.
         echo "Continuing with the defaults in it - setup asks the rest."
     else
@@ -198,13 +198,13 @@ _load_env() {
 _load_env
 
 # --- which engine, which venv ---------------------------------------------
-# Every DRAFT value runs on ExLlamaV3 1.6.0 in the one .venv, so switching DRAFT
+# Every DRAFT value runs on ExLlamaV3 1.6.6 in the one .venv, so switching DRAFT
 # back and forth never reinstalls anything. transformers is installed with it:
-# 1.6.0's chat template imports it and the engine no longer pulls it in.
+# 1.6.6's chat template imports it and the engine no longer pulls it in.
 # DRAFT=dflash2 (tools/dflash2.py) is the only value with a gate: a card that is
 # too small is refused here, before a download exists.
 VENV=".venv"
-ENGINE_VERSION="1.6.0"
+ENGINE_VERSION="1.6.6"
 _wheel_engine=(--engine-version "$ENGINE_VERSION")
 _extra_pkgs=(transformers)   # tools/dflash2.py EXTRA_PACKAGES
 _extra_probe=", transformers"
@@ -419,7 +419,7 @@ if [ "$_cur_ver" != "unknown" ] && [ "$_cur_ver" != "$_want_ver" ]; then
 fi
 
 # v1.4.4+ is mandatory: this quant ships a quantized vision tower (vision_bits 3),
-# which older builds decode incorrectly, and stock v1.6.0 is what this kit is
+# which older builds decode incorrectly, and stock v1.6.6 is what this kit is
 # validated against.
 if ! "$PYTHON" -c "import sys; from exllamav3.version import __version__ as v; sys.exit(0 if (v == \"$ENGINE_VERSION\" or tuple(map(int, v.split('.')[:3])) >= (1, 4, 4)) else (print(\" !! unexpected exllamav3 version:\", v) or 1))" 2>/dev/null; then
     _gotver="$("$PYTHON" -c 'from exllamav3.version import __version__; print(__version__)' 2>/dev/null || echo unknown)"

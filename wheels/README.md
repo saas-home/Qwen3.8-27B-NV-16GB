@@ -36,7 +36,7 @@ On a machine that *does* have the CUDA Toolkit and a C++ compiler (g++ / clang++
     build-env/bin/python -m pip install -U pip wheel setuptools ninja
     build-env/bin/python -m pip install torch --extra-index-url https://download.pytorch.org/whl/cu128
     build-env/bin/python -m pip wheel --no-build-isolation --no-deps \
-        git+https://github.com/turboderp-org/exllamav3.git@v1.6.0 -w wheels
+        git+https://github.com/turboderp-org/exllamav3.git@v1.6.6 -w wheels
 
 The wheel is tied to the torch build the line above installed, so build one per
 CUDA line you intend to support.

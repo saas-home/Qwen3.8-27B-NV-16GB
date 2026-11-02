@@ -33,6 +33,12 @@ Notable changes to this kit. Newest first.
   helpers.
 
 ### Changed
+- **ExLlamaV3 1.6.6 is now the default engine**, replacing 1.6.0. v1.6.6 publishes
+  the same prebuilt wheel matrix (cu128: torch 2.8.0–2.11.0; cu132: torch
+  2.11.0–2.13.0), so no platform or torch version is newly restricted. An
+  existing `.env` pinned to `EXL3_VERSION=1.6.0` still resolves (identical
+  matrix); `linux/start.sh` upgrades an already-installed wheel to 1.6.6 on
+  the next start.
 - **ExLlamaV3 1.6.0 is now the default engine for every `DRAFT` value**
   (`mtp`, `none`, `dflash2`), replacing 1.4.4. All values share one `.venv`.
   - `tools/wheels.py`: the 1.6.0 release table is the default; the 1.4.4 table is
