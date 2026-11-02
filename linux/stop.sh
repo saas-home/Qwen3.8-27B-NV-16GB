@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
 # stop.sh - stop the server started by start.sh, and the harness with it.
 #
-# The work is in tools/cli.py (`simplex stop`), which is the same code the
-# Windows stop runs. This file was a second implementation in bash, and it had
-# bugs the Python one does not: it needed `ss` from iproute2, and it sent the
-# server SIGINT - which a background job's child inherits as SIG_IGN, so every
-# background stop sat out ten seconds and finished with a SIGKILL.
+# The work is in tools/cli.py (`simplex stop`).
 #
 #   ./stop.sh                 stop both
 #   ./stop.sh --harness-only  leave the model loaded

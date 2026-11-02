@@ -93,7 +93,7 @@ class Logbook:
 
         Wrapping twice would put a Tee around a Tee: stop() then restores the
         inner Tee instead of the real stream and leaks the first file handle,
-        which on Windows keeps that log locked forever. The guard is global,
+        which keeps that log locked. The guard is global,
         not per-instance, because the second caller is usually a different
         object entirely."""
         global _ACTIVE
@@ -188,11 +188,10 @@ def explain(exc: BaseException) -> tuple[str, str]:
     if isinstance(exc, MemoryError):
         return ("Simplex ran out of memory.",
                 "Close other programs and try again. If it keeps happening, pick a "
-                "smaller model size with `windows\\start.bat profile`.")
+                "smaller model size with `simplex setup`.")
     if isinstance(exc, PermissionError):
-        return (f"Windows refused access to a file ({text}).",
-                "Antivirus or OneDrive is usually holding it. Move the Simplex folder "
-                "somewhere local, such as C:\\Simplex, and try again.")
+        return (f"System refused access to a file ({text}).",
+                "Check file and folder permissions, then try again.")
     if isinstance(exc, FileNotFoundError):
         return (f"A file Simplex needs is missing ({text}).",
                 "If files were moved or deleted, unzip the kit again next to your "

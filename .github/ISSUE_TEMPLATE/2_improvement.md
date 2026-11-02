@@ -24,7 +24,7 @@ assignees: ""
       element can be done better and how the kit can benefit from it.
 
       Examples that fit this repo: a better default quant for a given VRAM size,
-      clearer Windows/Linux docs, a safer VRAM preflight, a faster or more
+      clearer Linux deployment docs, a safer VRAM preflight, a faster or more
       reliable download, wheel coverage for another CUDA line, harness setup,
       or a change to the profile planner.
 -->

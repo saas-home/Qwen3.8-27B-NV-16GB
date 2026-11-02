@@ -9,7 +9,7 @@
       * which knob, default, script, or profile-planner path changes
       * whether the change affects measured numbers (VRAM, context, load, tok/s)
         and, if so, the expected direction
-      * why the change is safe on both Windows and Linux launchers
+      * why the change is safe and reliable
       * for measurement claims: the exact protocol (GPU, budget, quant, context)
 
 -->
@@ -32,7 +32,7 @@
     Tell us how you verified this change. For this kit that usually means:
 
       * `bash -n linux/*.sh` (syntax check) for Linux script changes
-      * an actual setup/start on Windows and/or Linux with the change
+      * an actual setup/start on Linux with the change
       * if behavior changed, the measured numbers with the new settings
         in the README's format (VRAM budget, context, images on/off)
 

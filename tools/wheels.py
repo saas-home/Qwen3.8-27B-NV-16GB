@@ -1,13 +1,13 @@
 """Prebuilt wheels, so a first run does not need a C++ compiler.
 
 The expensive, fragile part of setup is compiling ExLlamaV3's CUDA kernels:
-it wants the NVIDIA CUDA Toolkit and Visual Studio Build Tools, several GB of
+it wants the NVIDIA CUDA Toolkit and C++ compiler, several GB of
 downloads that have nothing to do with chatting to a model. A wheel built once
 per (Python version x CUDA version) removes all of it.
 
 Sources are tried in this order, and the first that yields a matching wheel wins:
 
-  1. `wheels/` next to windows\\start.bat - what the installer drops in, or what a
+  1. `wheels/` directory - what the installer drops in, or what a
      user copies off a USB stick on a machine with no internet.
   2. The engine's own GitHub release. turboderp-org/exllamav3 attaches a wheel
      per (CUDA line x torch version x Python), so the normal case needs no
@@ -15,8 +15,7 @@ Sources are tried in this order, and the first that yields a matching wheel wins
      exact URL rather than a --find-links page.
   3. WHEEL_INDEX in .env - one or more `pip --find-links` targets (a GitHub
      Releases page, a file share, an internal index).
-  4. PyPI - triton-windows lives there; the kit does not take the engine from it.
-  5. Compiling from source, which is what the kit did before this module.
+  4. Compiling from source, which is what the kit did before this module.
 
 Nothing here trusts a filename blindly: a wheel is only offered to pip when
 its Python tag, ABI tag and platform tag match the interpreter that will run
@@ -96,8 +95,7 @@ def wheel_matches(w: Wheel, tags: dict) -> bool:
     """True when this interpreter could actually import the wheel."""
     plat = (tags.get("plat") or "").lower()
     if w.plat.lower() not in ("any", plat):
-        # win_amd64 wheels are also published as win32/win_amd64 pairs; only an
-        # exact platform match or a pure-python wheel is safe.
+        # Only an exact platform match or a pure-python wheel is safe.
         return False
     abi = w.abi.lower()
     if abi == "abi3":
@@ -127,8 +125,8 @@ def local_wheels(tags: dict, folder: Path = WHEEL_DIR) -> list[Wheel]:
 
 def find_local(package: str, tags: dict, folder: Path = WHEEL_DIR,
                version: str | None = None) -> Wheel | None:
-    """`version`, when given, keeps only wheels of that release ("1.6.0+cu128..."
-    counts as "1.6.0"); None is every version, as it always was."""
+    """`version`, when given, keeps only wheels of that release ("1.6.6+cu128..."
+    counts as "1.6.6"); None is every version, as it always was."""
     want = re.sub(r"[-_.]+", "-", package).lower()
     hits = [w for w in local_wheels(tags, folder) if w.canonical == want
             and (version is None or w.version.partition("+")[0] == version)]
@@ -154,12 +152,12 @@ def cuda_tag(driver_index_url: str = "") -> str:
 
 # --------------------------------------------------- the engine's release -----
 
-# What turboderp-org/exllamav3 v1.6.0 actually published. Written down rather
+# What turboderp-org/exllamav3 v1.6.6 actually published. Written down rather
 # than discovered, because setup has to be able to say what it will do before
 # it has a network - and because the answer has to be exact.
 #
 # Why exact: the CUDA line and the torch version live in the wheel's *local
-# version* ("1.6.0+cu128.torch2.10.0"), which pip does not match against
+# version* ("1.6.6+cu128.torch2.10.0"), which pip does not match against
 # anything. Point pip at the release with --find-links and it filters on the
 # Python and platform tags only, then takes the highest version string - so a
 # torch 2.10 venv is happily handed the torch2.11 build, and the failure comes
@@ -180,7 +178,7 @@ def get_engine_version() -> str:
                         break
         except Exception:
             pass
-    return (v or "1.6.0").strip()
+    return (v or "1.6.6").strip()
 
 
 ENGINE_PACKAGE = "exllamav3"
@@ -189,7 +187,7 @@ ENGINE_RELEASE = ("https://github.com/turboderp-org/exllamav3/releases/download/
                   f"v{ENGINE_VERSION}/")
 
 # cuda line -> torch version -> the cp tags built for it (same on both platforms).
-# Taken from the v1.6.0 release's asset list. The ROCm wheels in that release are
+# Taken from the v1.6.6 release's asset list. The ROCm wheels in that release are
 # not listed; the kit is NVIDIA only.
 ENGINE_WHEELS: dict[str, dict[str, tuple[str, ...]]] = {
     "cu128": {
@@ -209,7 +207,7 @@ ENGINE_WHEELS: dict[str, dict[str, tuple[str, ...]]] = {
 ENGINE_PLATFORMS = ("win_amd64", "linux_x86_64")
 
 # The previous default, v1.4.4, kept so `wheels.py --engine-version 1.4.4` still
-# resolves (the launchers themselves require 1.6.0). It was built against other torch versions
+# resolves (the launchers themselves require 1.6.6). It was built against other torch versions
 # (it has 2.7, and cu132 carries only 2.11).
 ENGINE_VERSION_LEGACY = "1.4.4"
 ENGINE_WHEELS_LEGACY: dict[str, dict[str, tuple[str, ...]]] = {
@@ -224,6 +222,8 @@ ENGINE_WHEELS_LEGACY: dict[str, dict[str, tuple[str, ...]]] = {
         "2.11.0": ("cp312", "cp313", "cp314"),
     },
 }
+# v1.6.0 published the same (CUDA line x torch x cp) matrix as v1.6.6, so an
+# existing .env pinned to EXL3_VERSION=1.6.0 still resolves against this table.
 ENGINE_TABLES = {ENGINE_VERSION: ENGINE_WHEELS, "1.6.0": ENGINE_WHEELS, ENGINE_VERSION_LEGACY: ENGINE_WHEELS_LEGACY}
 
 
@@ -372,25 +372,8 @@ def describe(package: str, tags: dict, cfg: dict, folder: Path = WHEEL_DIR,
 # --------------------------------------------------------------- toolchain ---
 
 def have_compiler() -> bool:
-    """A source build needs cl.exe (Windows) or a C++ compiler (POSIX)."""
+    """A source build needs a C++ compiler (g++ or clang++)."""
     from shutil import which
-    if sys.platform == "win32":
-        if which("cl"):
-            return True
-        # VS is usually not on PATH until vcvars runs; vswhere tells us anyway
-        vswhere = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / \
-            "Microsoft Visual Studio" / "Installer" / "vswhere.exe"
-        if vswhere.is_file():
-            try:
-                r = subprocess.run(
-                    [str(vswhere), "-latest", "-products", "*", "-requires",
-                     "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-                     "-property", "installationPath"],
-                    capture_output=True, text=True, timeout=30)
-                return bool(r.stdout.strip())
-            except Exception:               # noqa: BLE001
-                return False
-        return False
     return bool(which("g++") or which("clang++"))
 
 
@@ -402,17 +385,16 @@ def have_cuda_toolkit() -> bool:
         v = os.environ.get(key)
         if v and (Path(v) / "bin").is_dir():
             return True
-    base = Path(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA")
-    return base.is_dir() and any(p.is_dir() for p in base.iterdir())
+    return False
 
 
 def source_build_blockers() -> list[str]:
-    """Plain-English list of what a source build is missing, for the setup page."""
+    """Plain-English list of what a source build is missing."""
     out = []
     if not have_compiler():
-        out.append("Visual Studio Build Tools with the \"Desktop development with C++\" workload")
+        out.append("C++ compiler (g++ or clang++)")
     if not have_cuda_toolkit():
-        out.append("NVIDIA CUDA Toolkit")
+        out.append("NVIDIA CUDA Toolkit (nvcc)")
     return out
 
 

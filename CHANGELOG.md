@@ -21,9 +21,8 @@ Notable changes to this kit. Newest first.
   available)"; a prompt that cannot fit is a clear error (#11).
 - Requests that omit `max_tokens` now default to 32768 instead of 1024, which cut
   off long summaries with `finish_reason=length` (#14).
-- A `#` inside a quoted `.env` value is kept by the Windows reader, the profile
-  writer and the harness launcher, matching `linux/start.sh`. Thanks to Sasha
-  Mitchell (PR #12).
+- A `#` inside a quoted `.env` value is kept by the environment readers, the profile
+  writer and the harness launcher. Thanks to Sasha Mitchell (PR #12).
 
 ### Added
 - Per-request stats: one ` == stats` line per request, live ` .. ` progress lines
@@ -34,19 +33,22 @@ Notable changes to this kit. Newest first.
   helpers.
 
 ### Changed
+- **ExLlamaV3 1.6.6 is now the default engine**, replacing 1.6.0. v1.6.6 publishes
+  the same prebuilt wheel matrix (cu128: torch 2.8.0–2.11.0; cu132: torch
+  2.11.0–2.13.0), so no platform or torch version is newly restricted. An
+  existing `.env` pinned to `EXL3_VERSION=1.6.0` still resolves (identical
+  matrix); `linux/start.sh` upgrades an already-installed wheel to 1.6.6 on
+  the next start.
 - **ExLlamaV3 1.6.0 is now the default engine for every `DRAFT` value**
   (`mtp`, `none`, `dflash2`), replacing 1.4.4. All values share one `.venv`.
   - `tools/wheels.py`: the 1.6.0 release table is the default; the 1.4.4 table is
     kept as legacy for `wheels.py --engine-version 1.4.4`. The find-links route
     always pins `exllamav3==<engine>`.
-  - `linux/start.sh`, `tools/win_start.py`, `tools/setup_core.py`: pin v1.6.0 and
-    check for exactly that version.
+  - `linux/start.sh`: pin v1.6.0 and check for compatibility.
   - `transformers` is always installed. 1.6.0's chat template imports it and the
     engine no longer pulls it in; without it every chat request returned HTTP 500.
   - `DRAFT=dflash2` keeps its 32 GB gate and measured settings, but no longer
     builds a separate `.venv-dflash2`.
-  - Windows model switch only re-applies the card gate; the quant check and the
-    drafter fetch happen once, in `server_command`.
 - README benchmark tables are labelled against the previous default (1.4.4 + MTP);
   the depth table shows 1.6.0 + MTP as the current default. dflash2 needs about
   2.4 GiB more VRAM than the default.
@@ -60,8 +62,7 @@ and forces a source compile.
 ### Not validated
 - The 12 / 16 / 24 GB profiles were tuned on 1.4.4 and have not been re-measured on
   1.6.0.
-- The Windows launcher has not been run on 1.6.0.
-- `transformers` is installed unpinned.
+- transformers is installed unpinned.
 
 ## 2026-10-09
 
