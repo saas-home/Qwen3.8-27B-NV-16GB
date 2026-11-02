@@ -170,23 +170,21 @@ def safe_relpath(path: str) -> str | None:
 
     Everything in the tree listing is chosen by whoever published the repo, so
     it is untrusted input that ends up in a filesystem path. `dest / "../../x"`
-    escapes the models folder, and on Windows `dest / "C:/Users/Public/x.bat"`
-    discards `dest` entirely - which, with a Startup folder one directory
-    traversal away, is code execution. Only plain relative segments pass."""
+    escapes the models folder. Only plain relative segments pass."""
     if not path or len(path) > 1024:
         return None
-    if "\\" in path:            # a Windows separator has no business in this API
+    if "\\" in path:            # backslash has no business in this API
         return None
     if path.startswith("/") or path.startswith("~"):
         return None
-    if re.match(r"^[A-Za-z]:", path):        # drive letter, absolute on Windows
+    if re.match(r"^[A-Za-z]:", path):        # drive-absolute path prefix
         return None
     parts = path.split("/")
     if any(seg in _BAD_SEGMENTS for seg in parts):
         return None
     if any(seg.endswith((" ", ".")) or set(seg) & set('<>:"|?*') or
            any(ord(c) < 32 for c in seg) for seg in parts):
-        return None              # names Windows cannot represent, or control chars
+        return None              # invalid path names or control chars
     return "/".join(parts)
 
 
@@ -381,9 +379,8 @@ class Download:
                 self._fetch(f)
             except BaseException as e:      # noqa: BLE001 - re-raised below
                 # `state` has to reach a terminal value before the exception
-                # leaves, or every watcher polling it (setup_core's cancel
-                # thread, the page's progress bar) waits for a download that
-                # is never coming back.
+                # leaves, or any watcher polling it (the cancel thread,
+                # progress bar) waits for a download that is never coming back.
                 with self._lock:
                     p.state = "cancelled" if self.cancelled else "error"
                     p.message = str(e)

@@ -1,4 +1,4 @@
-"""simplex - one command for the whole kit, on Windows and on Linux.
+"""simplex - unified CLI for the Qwen3.8-27B serving kit.
 
     simplex setup                 install the environment and fetch a model
     simplex start                 load a model and serve it
@@ -12,16 +12,9 @@
     simplex models                what is on the disk
     simplex doctor                check this machine and this install
 
-Why this exists: windows\\START-HERE.bat/setup.sh, windows\\start.bat/start.sh and windows\\stop.bat/stop.sh
-are six files, three of them written twice - once in cmd and once in bash -
-which is how Windows and Linux drifted apart (a first run on Linux used to
-stop and send you to the other script; a stop on Linux always ended in a
-SIGKILL). Everything below is one implementation that runs on both.
-
-The heavy lifting is still the code that was already here and already tested:
-`setup` and `start` hand over to tools/win_start.py on Windows and to linux/start.sh
-on Linux. What lives here is the part that was duplicated - finding out what is
-running, stopping it politely, reading the log, and saying what is wrong.
+Why this exists: simplex provides a single unified CLI for setup, start,
+stop, status, logs, models, and doctor checks on Linux. Delegating core runtime
+operations to linux/start.sh.
 """
 
 from __future__ import annotations
@@ -48,7 +41,6 @@ ENV_FILE = ROOT / ".env"
 ENV_EXAMPLE = ROOT / ".env.example"
 SERVER_PID = LOGS / "server.pid"
 HARNESS_PID = LOGS / "harness.pid"
-WINDOWS = os.name == "nt"
 
 if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
@@ -63,13 +55,6 @@ def _colour_ok() -> bool:
         return False
     if not sys.stdout.isatty():
         return False
-    if WINDOWS:
-        try:
-            import ctypes
-            k = ctypes.windll.kernel32
-            k.SetConsoleMode(k.GetStdHandle(-11), 7)
-        except Exception:                                   # noqa: BLE001
-            return False
     return True
 
 
@@ -99,7 +84,7 @@ def fail(msg: str, code: int = 1):
 
 # ------------------------------------------------------------------ .env ----
 def read_env(path: Path = ENV_FILE) -> dict:
-    """.env as data, never as shell. Same rules as linux/start.sh and win_start.py:
+    """.env as data, never as shell. Same rules as linux/start.sh:
     KEY=value, a trailing comment, quotes stripped, CRLF tolerated."""
     cfg: dict[str, str] = {}
     try:
@@ -131,7 +116,7 @@ def env_int(cfg: dict, key: str, default: int) -> int:
 def venv_python() -> Path:
     # .venv (see tools/dflash2.py)
     venv = dflash2.venv_name(read_env().get("DRAFT"))
-    return ROOT / venv / ("Scripts/python.exe" if WINDOWS else "bin/python")
+    return ROOT / venv / "bin/python"
 
 
 def any_python() -> str:
@@ -154,13 +139,6 @@ def port_listening(port: int, host: str = "127.0.0.1") -> bool:
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
-    if WINDOWS:
-        try:
-            r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-                               capture_output=True, text=True, timeout=10)
-            return str(pid) in r.stdout
-        except Exception:                                   # noqa: BLE001
-            return False
     try:
         os.kill(pid, 0)
         return True
@@ -172,16 +150,6 @@ def _pid_alive(pid: int) -> bool:
 
 def _cmdline(pid: int) -> str:
     """The process's command line, for the "is this really ours?" check."""
-    if WINDOWS:
-        try:
-            r = subprocess.run(
-                ["powershell", "-NoProfile", "-Command",
-                 f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}')."
-                 "CommandLine"],
-                capture_output=True, text=True, timeout=20)
-            return (r.stdout or "").strip()
-        except Exception:                                   # noqa: BLE001
-            return ""
     try:
         raw = Path(f"/proc/{pid}/cmdline").read_bytes()
         return raw.replace(b"\0", b" ").decode("utf-8", "replace").strip()
@@ -192,22 +160,8 @@ def _cmdline(pid: int) -> str:
 def port_owner(port: int) -> tuple[int, str]:
     """(pid, command line) of whatever is listening on `port`, or (0, "").
 
-    No iproute2 and no lsof: /proc on Linux, Get-NetTCPConnection on Windows.
-    linux/stop.sh needed `ss`, which is not on every image."""
+    Reads /proc on Linux to identify socket owner."""
     port = int(port)
-    if WINDOWS:
-        try:
-            r = subprocess.run(
-                ["powershell", "-NoProfile", "-Command",
-                 f"(Get-NetTCPConnection -LocalPort {port} -State Listen "
-                 "-ErrorAction SilentlyContinue | Select-Object -First 1)"
-                 ".OwningProcess"],
-                capture_output=True, text=True, timeout=20)
-            pid = int((r.stdout or "0").strip() or 0)
-        except Exception:                                   # noqa: BLE001
-            pid = 0
-        return (pid, _cmdline(pid)) if pid else (0, "")
-
     inodes = []
     for proc_net in ("/proc/net/tcp", "/proc/net/tcp6"):
         try:
@@ -253,27 +207,15 @@ def stop_pid(pid: int, timeout: float = 20.0, label: str = "process") -> bool:
 
     SIGTERM rather than SIGINT: a launcher started in the background runs as a
     job of a non-interactive shell, which sets SIGINT to SIG_IGN, and the child
-    inherits that across exec. linux/stop.sh sent INT to the server and so always sat
-    out its ten seconds and finished with a SIGKILL - the same bug that was
-    already fixed for the harness. On Windows there is no SIGTERM to send, so
-    taskkill without /F asks first and /F is the fallback."""
+    inherits that across exec."""
     if not _pid_alive(pid):
         return True
     try:
-        if WINDOWS:
-            subprocess.run(["taskkill", "/PID", str(pid), "/T"],
-                           capture_output=True, timeout=20)
-        else:
-            os.kill(pid, signal.SIGTERM)
+        os.kill(pid, signal.SIGTERM)
     except Exception:                                       # noqa: BLE001
         pass
-    # A console process with no window often cannot be closed politely on
-    # Windows at all ("can only be terminated forcefully"), so waiting out a
-    # long timeout there buys nothing - windows\stop.bat has always forced after a
-    # second. On POSIX the wait is worth it: SIGTERM is how the server gets to
-    # release the card and its cache pages before it goes.
-    polite = min(timeout, 3.0) if WINDOWS else timeout
-    step = 0.5 if WINDOWS else 0.25
+    polite = timeout
+    step = 0.25
     deadline = time.time() + polite
     while time.time() < deadline:
         if not _pid_alive(pid):
@@ -281,11 +223,7 @@ def stop_pid(pid: int, timeout: float = 20.0, label: str = "process") -> bool:
         time.sleep(step)
     out(f"  {label} did not stop in {polite:.0f}s - forcing it.")
     try:
-        if WINDOWS:
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                           capture_output=True, timeout=20)
-        else:
-            os.kill(pid, signal.SIGKILL)
+        os.kill(pid, signal.SIGKILL)
     except Exception:                                       # noqa: BLE001
         pass
     deadline = time.time() + 5
@@ -361,11 +299,7 @@ def snapshot() -> dict:
 
 # ------------------------------------------------------------- delegation ---
 def launcher_cmd(mode: str, extra: list[str]) -> list[str]:
-    """The command that actually installs or starts - the code that was here
-    before this file and is what the test suite covers."""
-    if WINDOWS:
-        return [any_python(), str(TOOLS / "win_start.py")] + \
-               (["setup"] if mode == "setup" else []) + extra
+    """The command that actually installs or starts on Linux."""
     bash = shutil.which("bash") or "/bin/bash"
     return [bash, str(ROOT / "linux/start.sh")] + \
            (["setup"] if mode == "setup" else []) + extra
@@ -392,22 +326,14 @@ def run_launcher(mode: str, harness: str | None, extra: list[str]) -> int:
 
 
 def start_detached(mode: str, harness: str | None, extra: list[str]) -> int:
-    """Background start, on both systems. linux/start.sh had --background; Windows
-    had nothing, so `windows\\start.bat` always owned a console window."""
+    """Background start."""
     LOGS.mkdir(exist_ok=True)
     log = LOGS / time.strftime("simplex-%Y-%m-%d_%H%M%S.log")
     cmd = launcher_cmd(mode, extra)
-    kwargs = {}
-    if WINDOWS:
-        kwargs["creationflags"] = (subprocess.CREATE_NEW_PROCESS_GROUP |
-                                   0x00000008 |          # DETACHED_PROCESS
-                                   0x08000000)           # CREATE_NO_WINDOW
-    else:
-        kwargs["start_new_session"] = True
     with open(log, "wb") as fh:
         proc = subprocess.Popen(cmd, cwd=str(ROOT), env=child_env(harness),
                                 stdout=fh, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, **kwargs)
+                                stdin=subprocess.DEVNULL, start_new_session=True)
     SERVER_PID.write_text(str(proc.pid))
     cfg = read_env()
     port = env_int(cfg, "PORT", 8888)
@@ -507,7 +433,7 @@ def cmd_stop(a) -> int:
         out(f"  No server listening on port {port}.")
         _clear_stale_pidfile()
         return rc
-    if cmd and "serve_openai" not in cmd and "win_start" not in cmd:
+    if cmd and "serve_openai" not in cmd:
         out(red(f"  Port {port} is held by another process") +
             f" (pid {pid}): {cmd[:70]}")
         out("  Refusing to kill it.")
@@ -678,16 +604,10 @@ def cmd_harness(a) -> int:
     # until you Ctrl-C it is not that.
     LOGS.mkdir(exist_ok=True)
     log = LOGS / time.strftime("harness-%Y-%m-%d_%H%M%S.log")
-    kwargs = {}
-    if WINDOWS:
-        kwargs["creationflags"] = (subprocess.CREATE_NEW_PROCESS_GROUP |
-                                   0x00000008 | 0x08000000)
-    else:
-        kwargs["start_new_session"] = True
     with open(log, "wb") as fh:
         proc = subprocess.Popen(argv, cwd=str(ROOT), stdout=fh,
                                 stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, **kwargs)
+                                stdin=subprocess.DEVNULL, start_new_session=True)
     HARNESS_PID.write_text(str(proc.pid))
     deadline = time.time() + 300           # a first run downloads it from npm
     while time.time() < deadline:

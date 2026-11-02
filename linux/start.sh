@@ -14,13 +14,10 @@ cd "$SELF_DIR/.."
 . "$SELF_DIR/preflight.sh"
 
 # --- background mode ------------------------------------------------------
-# On Windows the kit lives in the tray with no console; the honest equivalent
-# here is simply not holding a terminal open. --background re-runs this script
-# detached with its output in logs/, and prints where that log is and how to
-# stop it. Everything else - first-run setup, the profile menu - happens
-# exactly as it would in front of you, written to the log instead of the
-# screen. --status says whether one is up; stop.sh stops it, and already
-# refuses to kill anything that is not this server.
+# --background re-runs this script detached with its output in logs/, and
+# prints where that log is and how to stop it. Everything else - first-run setup,
+# the profile menu - happens exactly as it would in front of you, written to the
+# log instead of the screen. --status says whether one is up; stop.sh stops it.
 PIDFILE="logs/server.pid"
 _port_from_env() {
     local p=""
@@ -107,7 +104,7 @@ if [ "$RUN_BG" = "1" ]; then
     # actually keeps this alive when the terminal closes.
     SELF="$SELF_DIR/$(basename "$0")"
     # through the same shell rather than executing the file: a checkout that
-    # arrived without its exec bit (a zip, a copy off Windows) would otherwise
+    # arrived without its exec bit would otherwise
     # fail here with "Permission denied" and nowhere obvious to look
     nohup "${BASH:-bash}" "$SELF" ${1+"$@"} >"$LOG" 2>&1 &
     echo $! > "$PIDFILE"
@@ -143,7 +140,7 @@ if [ ! -f .env ]; then
     if [ "$MODE" = "setup" ]; then
         # Carry on. Stopping here sent a first-time user who had just run
         # ./setup.sh away to ./start.sh, which is the other door and does not
-        # install anything; win_start.py has always created the file and
+        # install anything; the Windows launcher created the file and
         # continued, so the two systems disagreed on the very first command.
         echo "Continuing with the defaults in it - setup asks the rest."
     else
@@ -171,13 +168,8 @@ if [ -n "$_pyprof" ]; then
     fi
 fi
 
-# .env is data, not shell. `source` runs it, and this file is written by
-# start.bat and tools/profiles.py as much as by hand, so two ordinary lines in
-# it are commands to bash: a value with a space (PROFILE_GPU=NVIDIA GeForce RTX
-# 5090 tries to run GeForce) and the carriage return every line carries when
-# the file was last written on Windows ($'\r': command not found). Read it as
-# the key=value list it is instead - same rules as the Python side, which has
-# always parsed it rather than executing it.
+# .env is data, not shell. `source` runs it, and values with spaces or trailing
+# comments must not execute as commands. Read it as key=value pairs instead.
 _load_env() {
     local line key value
     while IFS= read -r line || [ -n "$line" ]; do
@@ -206,13 +198,13 @@ _load_env() {
 _load_env
 
 # --- which engine, which venv ---------------------------------------------
-# Every DRAFT value runs on ExLlamaV3 1.6.0 in the one .venv, so switching DRAFT
+# Every DRAFT value runs on ExLlamaV3 1.6.6 in the one .venv, so switching DRAFT
 # back and forth never reinstalls anything. transformers is installed with it:
-# 1.6.0's chat template imports it and the engine no longer pulls it in.
+# 1.6.6's chat template imports it and the engine no longer pulls it in.
 # DRAFT=dflash2 (tools/dflash2.py) is the only value with a gate: a card that is
 # too small is refused here, before a download exists.
 VENV=".venv"
-ENGINE_VERSION="1.6.0"
+ENGINE_VERSION="1.6.6"
 _wheel_engine=(--engine-version "$ENGINE_VERSION")
 _extra_pkgs=(transformers)   # tools/dflash2.py EXTRA_PACKAGES
 _extra_probe=", transformers"
@@ -427,7 +419,7 @@ if [ "$_cur_ver" != "unknown" ] && [ "$_cur_ver" != "$_want_ver" ]; then
 fi
 
 # v1.4.4+ is mandatory: this quant ships a quantized vision tower (vision_bits 3),
-# which older builds decode incorrectly, and stock v1.6.0 is what this kit is
+# which older builds decode incorrectly, and stock v1.6.6 is what this kit is
 # validated against.
 if ! "$PYTHON" -c "import sys; from exllamav3.version import __version__ as v; sys.exit(0 if (v == \"$ENGINE_VERSION\" or tuple(map(int, v.split('.')[:3])) >= (1, 4, 4)) else (print(\" !! unexpected exllamav3 version:\", v) or 1))" 2>/dev/null; then
     _gotver="$("$PYTHON" -c 'from exllamav3.version import __version__; print(__version__)' 2>/dev/null || echo unknown)"
@@ -516,7 +508,7 @@ dl_model() {   # dl_model <repo_id> <dir> <label> [revision; default HF_REVISION
     # middle of a shard was called "already present", and the server then met
     # half a model. tools/downloader.py answers the question properly (every
     # shard the index names, and no .part still waiting) and is what the
-    # Windows launcher and the setup page ask as well.
+    # setup check asks as well.
     if "$PYTHON" -c "import sys; sys.path.insert(0, 'tools'); import downloader; sys.exit(0 if downloader.is_complete(sys.argv[1], tuple(f for f in sys.argv[2:] if f)) else 1)" "$dir" "$required" 2>/dev/null; then
         echo "$label: $dir already present — skipping download."
         return 0

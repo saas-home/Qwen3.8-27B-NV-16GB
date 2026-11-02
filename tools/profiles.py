@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """GPU-aware profile picker for the Qwen3.8-27B EXL3 kit.
 
-Called by windows\\start.bat (via win_start.py) and linux/start.sh before anything is
+Called by linux/start.sh and simplex before anything is
 downloaded. It reads the GPU's VRAM with nvidia-smi, works out which quant /
 context / KV-cache combinations fit under the card's budget, shows two or three
 choices (best quality vs. longest context) and writes the choice into .env:
@@ -118,7 +118,7 @@ QUANTS = [
     # in the table: the formula prices it out of a 16 GB card entirely (it plans 0
     # tokens) and the bench watched it prefill 77824 at a peak of 14.578.
     Quant("3.5", 3.5, "turboderp/Qwen3.8-27B-exl3", "3.50bpw", "models/Qwen3.8-27B-EXL3-3.5bpw", 11.864, 15.3, 0.872, 0.08,  "very good", True, 77824, 41984, 14.7, 14.578),
-    Quant("3.0", 3.0, "turboderp/Qwen3.8-27B-exl3", "3.00bpw", "models/Qwen3.8-27B-EXL3-3.0bpw", 10.422, 13.8, 0.870, 0.112, "better", True, 204800, 204800, 14.7, 14.695),
+    Quant("3.0", 3.0, "turboderp/Qwen3.8-27B-exl3", "SC_3.00bpw_H4", "models/Qwen3.8-27B-EXL3-SC-3.0bpw-H4", 10.422, 13.8, 0.870, 0.112, "better", True, 204800, 204800, 14.7, 14.695),
     # 2.5bpw: weights are the fitted intercept of allocated_gib over seven contexts
     # (2026-09-06, measured) - 9.001, not the 8.3 the shard sizes suggested.
     # The tower never shows up in allocated_gib (it loads lazily), but the images-on
@@ -591,7 +591,7 @@ def _env_value(value: str) -> str:
 
 def write_env(path: Path, updates: dict[str, str]) -> None:
     """Set keys in .env in place (uncommented KEY=... lines), append the rest.
-    Writes via a temp file + replace; clears a Windows read-only attribute if
+    Writes via a temp file + replace; clears a read-only attribute if
     that is what blocks the write. Raises PermissionError if the file is locked."""
     import os, stat, tempfile
     updates = {k: _env_value(v) for k, v in updates.items()}
@@ -606,7 +606,7 @@ def write_env(path: Path, updates: dict[str, str]) -> None:
     if rest:
         if lines and lines[-1].strip():
             lines.append("")
-        lines.append("# --- profile chosen by windows\\START-HERE.bat / linux/setup.sh (run `simplex setup` to change) ---")
+        lines.append("# --- profile chosen by linux/setup.sh (run `simplex setup` to change) ---")
         for k in rest:
             lines.append(f"{k}={updates[k]}")
     data = "\n".join(lines) + "\n"
@@ -665,37 +665,10 @@ def env_updates(o: dict, gpu_name: str) -> dict[str, str]:
 
 def timed_input(prompt: str, timeout: float) -> str | None:
     print(prompt, end="", flush=True)
-    if sys.platform != "win32":
-        import select
-        r, _, _ = select.select([sys.stdin], [], [], timeout)
-        if r:
-            return sys.stdin.readline().strip()
-        print()
-        return None
-    import msvcrt
-    buf, t0 = [], time.time()
-    while time.time() - t0 < timeout:
-        if msvcrt.kbhit():
-            ch = msvcrt.getwch()
-            if ch in ("\r", "\n"):
-                print(); return "".join(buf).strip()
-            if ch in ("\x00", "\xe0"):
-                # An arrow or function key arrives as a two-character sequence:
-                # this prefix, then a code that is itself printable ("H" for Up).
-                # Dropping only the prefix let the second half land in the answer,
-                # so pressing Up typed an H into it. Swallow both halves.
-                if msvcrt.kbhit():
-                    msvcrt.getwch()
-                continue
-            if ch == "\x08":
-                if buf:
-                    buf.pop(); print("\b \b", end="", flush=True)
-            elif ch == "\x03":
-                raise KeyboardInterrupt
-            elif ch.isprintable():
-                buf.append(ch); print(ch, end="", flush=True)
-        else:
-            time.sleep(0.05)
+    import select
+    r, _, _ = select.select([sys.stdin], [], [], timeout)
+    if r:
+        return sys.stdin.readline().strip()
     print()
     return None
 
@@ -752,8 +725,7 @@ def show_menu(g: "GPU", budget: float, options: list[dict], current: dict | None
     print("  Quality  = how close to the unquantised model: "
           + " > ".join(reversed(QUALITY_ORDER)) + ".")
     print("  VRAM use = weights + KV cache for that context + images + runtime; mostly context on big cards.")
-    print("  Higher quality = bigger download and slower tokens/s.   Change any time:  " +
-          ("simplex setup" if sys.platform != "win32" else "windows\\START-HERE.bat"))
+    print("  Higher quality = bigger download and slower tokens/s.   Change any time:  simplex setup")
     print()
 
 
@@ -782,8 +754,7 @@ def choose(options: list[dict], auto: bool, default: int = 1, timeout: float = 9
 
 
 # ----------------------------------------------------- what is on disk ------
-# windows\start.bat starts a model; windows\START-HERE.bat puts models on the disk. So the start
-# side never asks the download questions - it asks the one question a machine
+# The start side never asks the download questions - it asks the one question a machine
 # with several weights on it actually raises, which is which of them to load.
 
 INST_COLS = "{n:>3}  {qual:<14} {ctx:<12} {img:<7} {vram:>10}   {quant:<8}{tag}"
