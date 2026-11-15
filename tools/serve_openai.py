@@ -5,10 +5,10 @@ Minimal OpenAI-compatible server for the EXL3 serving target.
 Drafter: MTP by default (`-dm mtp`; the draft head lives inside the target
 checkpoint, so there are no separate draft weights to download). Alternatives:
 no drafting at all (`-dm none`), or a separate draft model's directory
-(`-dm <dir>`), which is how DRAFT=dflash2 runs (it needs ExLlamaV3 1.6.6, see
+(`-dm <dir>`), which is how DRAFT=dflash2 runs (it needs ExLlamaV3 1.6.7, see
 tools/dflash2.py). The launchers map the .env `DRAFT` knob onto these.
 
-Requires ExLlamaV3 >= 1.4.4 (the kit installs 1.6.6): the served quant
+Requires ExLlamaV3 >= 1.4.4 (the kit installs 1.6.7): the served quant
 carries a quantized vision tower (vision_bits 3), which only v1.4.4+ decodes
 correctly.
 
@@ -494,7 +494,9 @@ def _cap_process_vram(gb):
           f"{total / 1024**3:.1f} GB device)", flush = True)
 
 
-def build_model(argv, use_draft = True):
+def build_model(argv, use_draft = True, add_draft_args = None):
+    # add_draft_args: also register the engine's drafting options when a
+    # host-side drafter (n-gram) is on but no draft MODEL is loaded.
     from argparse import ArgumentParser
 
     # The one-time JIT build of the CUDA extension can look like a hang;
@@ -514,7 +516,8 @@ def build_model(argv, use_draft = True):
 
     from exllamav3 import model_init, Generator
     parser = ArgumentParser()
-    model_init.add_args(parser, add_draft_model_args = use_draft)
+    _draft_args = use_draft if add_draft_args is None else add_draft_args
+    model_init.add_args(parser, add_draft_model_args = _draft_args)
     parser.add_argument("-dt", "--draft_tokens", type = int, default = 0)
     args = parser.parse_args(argv)
     ccs_bytes = int(getattr(args, "cpu_cache_size", 0.0) * (1024 ** 3))
@@ -523,7 +526,9 @@ def build_model(argv, use_draft = True):
     chunk_size = int(os.environ.get("CHUNK_SIZE", 0)) or getattr(args, "chunk_size", 4096) or 4096
     args.chunk_size = chunk_size
     print(f" == prefill chunk size: {chunk_size} tokens", flush = True)
-    if use_draft:
+    if _draft_args:
+        # With the drafting options registered the engine always answers in its
+        # 7-tuple form; a host-side n-gram drafter leaves draft_model None.
         model, config, cache, tokenizer, draft_model, draft_config, draft_cache = \
             model_init.init(args, progress = True)
         generator = Generator(
@@ -579,10 +584,44 @@ def load_vision(config, max_pixels):
         return None
 
 
+def _safe_http_url(url):
+    """SSRF guard for client-supplied image URLs (audit finding F-1).
+    http(s) only; the host must resolve and EVERY resolved address must be
+    globally routable - loopback, private, link-local (cloud metadata
+    169.254.169.254 lives there), multicast and reserved ranges are refused.
+    Redirects are re-checked hop by hop. A hostile DNS server could still
+    race the check (validate-then-fetch resolves twice); the fetch is
+    read-only and size-capped, which is proportionate for a home/LAN kit."""
+    import ipaddress, socket, urllib.parse
+    p = urllib.parse.urlsplit(url)
+    if p.scheme not in ("http", "https"):
+        raise ValueError("image_url must be a data: URL or an http(s) URL")
+    host = p.hostname
+    if not host:
+        raise ValueError("image_url has no host")
+    port = p.port or (443 if p.scheme == "https" else 80)
+    try:
+        infos = socket.getaddrinfo(host, port, type = socket.SOCK_STREAM)
+    except socket.gaierror:
+        raise ValueError(f"image_url host does not resolve: {host}")
+    if not infos:
+        raise ValueError(f"image_url host does not resolve: {host}")
+    for _, _, _, _, sa in infos:
+        ip = ipaddress.ip_address(sa[0])
+        # not is_global alone: CPython counts multicast as "global" on IPv4,
+        # so blacklist the special-use classes explicitly.
+        if (not ip.is_global or ip.is_multicast or ip.is_unspecified
+                or ip.is_loopback or ip.is_link_local or ip.is_reserved
+                or ip.is_private):
+            raise ValueError("image_url may not point at a private or reserved address")
+    return url
+
+
 def decode_image(url):
     """OpenAI image_url -> PIL.Image (RGB), downscaled to vision['max_pixels'].
     Accepts data: URLs and http(s) URLs. Local file paths are refused on
-    purpose (the server may be reachable from the LAN)."""
+    purpose (the server may be reachable from the LAN), and http(s) targets
+    pass the SSRF guard above on every hop."""
     import base64, io, math, urllib.request
     from PIL import Image
     url = (url or "").strip()
@@ -590,8 +629,14 @@ def decode_image(url):
         _, _, b64 = url.partition(",")
         raw = base64.b64decode(b64)
     elif url.startswith(("http://", "https://")):
+        _safe_http_url(url)
+        class _GuardedRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                _safe_http_url(newurl)
+                return super().redirect_request(req, fp, code, msg, headers, newurl)
+        opener = urllib.request.build_opener(_GuardedRedirect)
         req = urllib.request.Request(url, headers = {"User-Agent": "simplex-kit/1.0"})
-        with urllib.request.urlopen(req, timeout = 20) as r:
+        with opener.open(req, timeout = 20) as r:
             raw = r.read(48 * 1024 * 1024 + 1)
         if len(raw) > 48 * 1024 * 1024:
             raise ValueError("image larger than 48 MB")
@@ -1657,6 +1702,17 @@ def main():
                            "a draft model's directory, or 'none' to disable drafting")
     ap.add_argument("-dt", "--draft_tokens", type = int, default = int(os.environ.get("DRAFT_TOKENS", 0)),
                     help = "Number of speculative draft tokens per pass (e.g. 2, default: 4 for MTP)")
+    ap.add_argument("--ngram_match_min", type = int, default = int(os.environ.get("NGRAM_MATCH_MIN", 0)),
+                    help = "n-gram drafting: minimum suffix match length to trigger a "
+                           "draft (0 = off, try 3). Host-side SAM: no VRAM, no extra weights")
+    ap.add_argument("--ngram_corpus", type = str, default = os.environ.get("NGRAM_CORPUS") or None,
+                    help = "optional frozen SAM corpus file for n-gram drafting")
+    ap.add_argument("--ngram_ram", action = "store_true",
+                    default = os.environ.get("NGRAM_RAM", "0").lower() in ("1", "true", "yes"),
+                    help = "load a PLE n-gram table fully into system RAM (never VRAM); no-op without one")
+    ap.add_argument("--ngram_lock", action = "store_true",
+                    default = os.environ.get("NGRAM_LOCK", "0").lower() in ("1", "true", "yes"),
+                    help = "as --ngram_ram, and mlock the pages so they never swap")
     ap.add_argument("-gs", "--grid_size", type = float, default = 14.7,
                     help = "GPU memory budget in GB (autosplit + process cap). "
                            "14.7 is the 16 GB-card recipe")
@@ -1669,7 +1725,7 @@ def main():
                     help = "id reported by /v1/models and accepted in requests "
                            "(default: the model folder name, lower-cased)")
     ap.add_argument("-p", "--port", type = int, default = PORT)
-    ap.add_argument("--host", type = str, default = "0.0.0.0",
+    ap.add_argument("--host", type = str, default = "127.0.0.1",
                     help = "Interface to bind (use 127.0.0.1 for local-only)")
     ap.add_argument("-ccs", "--cpu_cache_size", type = float, default = 0.0,
                     help = "CPU second-tier cache size in GB (pages spill from "
@@ -1765,13 +1821,39 @@ def main():
         argv += ["-ccs", str(args.cpu_cache_size)]
     if getattr(args, "draft_tokens", 0) > 0:
         argv += ["-dt", str(args.draft_tokens)]
+    def _engine_has_ngram():
+        # -ngram arrived with ExLlamaV3 1.6.7; on older engines passing it
+        # would make the engine's own argparse bail, so probe first.
+        try:
+            from argparse import ArgumentParser as _AP
+            from exllamav3 import model_init as _mi
+            p = _AP(add_help = False)
+            _mi.add_args(p, add_draft_model_args = True)
+            return any("--ngram_match_min" in a.option_strings for a in p._actions)
+        except Exception:
+            return False
+    use_ngram = (args.ngram_match_min > 0 or bool(args.ngram_corpus))
+    if use_ngram and not _engine_has_ngram():
+        print(" == n-gram draft: OFF - engine has no --ngram_match_min "
+              "(update EXL3_VERSION in .env to >= 1.6.7)", flush = True)
+        use_ngram = False
+    if use_ngram:
+        argv += ["-ngram", str(args.ngram_match_min)]
+        if args.ngram_corpus:
+            argv += ["-ngram_corpus", args.ngram_corpus]
+        if args.ngram_ram:
+            argv += ["-ngr"]
+        if args.ngram_lock:
+            argv += ["-ngl"]
 
     tokens_msg = f" ({args.draft_tokens} tokens/pass)" if getattr(args, "draft_tokens", 0) > 0 else ""
     print(f" == loading {args.model}"
           + (f" + MTP head{tokens_msg}" if use_mtp else
              (f" + draft {args.draft_model}{tokens_msg}" if use_draft else " (no draft)"))
+          + (f" + n-gram draft (min match {args.ngram_match_min}, host RAM)" if use_ngram else "")
           + " ...", flush = True)
-    generator, tokenizer, config = build_model(argv, use_draft = use_draft)
+    generator, tokenizer, config = build_model(argv, use_draft = use_draft,
+                                               add_draft_args = use_draft or use_ngram)
     batch_worker = BatchWorker(generator)
     print(f" == parallel concurrency: up to {PARALLEL} requests generating simultaneously", flush = True)
     stats["context_length"] = int(args.cache_size)

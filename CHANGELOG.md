@@ -5,6 +5,25 @@ Notable changes to this kit. Newest first.
 ## Unreleased
 
 ### Fixed
+- **SSRF in `image_url` (security audit F-1):** client-supplied http(s) image
+  URLs are now validated before fetch — http(s) only, host must resolve, and
+  every resolved address must be globally routable (loopback, private,
+  link-local/cloud-metadata, multicast and reserved ranges refused); redirects
+  are re-checked per hop. Restored `tests/test_url_guard.py` covers it.
+- **Insecure default bind (security audit F-2):** `tools/serve_openai.py` and
+  `.env.example` now default to `HOST=127.0.0.1`; `0.0.0.0` remains available
+  in `.env` for trusted LANs only. The README Pi Agent example no longer
+  ships a real LAN address.
+- **Harness token exposure in logs and status (security audit F-4):** the
+  launch token is redacted (`token=****`) in dsh's echoed output, the
+  launcher log, `simplex status` and `status --json`. The full address is
+  revealed on demand by `simplex harness open`.
+- **`simplex harness <action>` crashed** with `AttributeError: 'Namespace'
+  object has no attribute 'port'` — the subcommand never defined `--port`.
+- **Documentation vs reality for `DSH_VERSION` (security audit F-3):** a
+  pinned version npm does not have fails the launch (nothing runs) — the
+  stale comment claiming a silent fallback to `latest` is corrected, and an
+  explicit `latest` now prints a warning that npm decides what code runs.
 - Console setup (`SETUP=console`) installs the prebuilt engine wheel before
   compiling, like the browser setup; fixes a failed compile on machines whose only
   CUDA toolkit is newer than torch's CUDA line (#3).
@@ -33,6 +52,21 @@ Notable changes to this kit. Newest first.
   helpers.
 
 ### Changed
+- **Context window raised to 245,760 tokens (240k)** in the kit `.env`/`.env.example`
+  (native model frame is 262,144), with `GPU_MEM_GB` at the 15.7 GB headless budget.
+  Live-verified: server boots the 240k cache (13.85 GiB reserved) and prefilled a
+  165,845-token prompt at 848 tok/s cold, peak 15,340/16,376 MiB, zero OOM.
+- **DeepSeek Harness pin raised `0.1.3-alpha.2` → `0.2.2-rc.3`** (`DSH_VERSION`,
+  `tools/dsh.py DEFAULT_VERSION`). Verified: npx fetched 0.2.2-rc.3, the regenerated
+  `.dsh/settings.yaml` is accepted, the UI serves and chat round-trips.
+- **ExLlamaV3 1.6.7 is now the default engine**, replacing 1.6.6 (patch release,
+  same prebuilt wheel matrix). Updated in `linux/start.sh`, the `tools/wheels.py`
+  fallback, `tools/dflash2.py` and the docs.
+- **N-gram drafting knobs** (`NGRAM_MATCH_MIN`, `NGRAM_CORPUS`, `NGRAM_RAM`,
+  `NGRAM_LOCK` in `.env`, forwarded by `linux/start.sh` and
+  `tools/serve_openai.py`): host-side SAM drafting from the engine's v1.6.7
+  flags — no extra weights, no VRAM, works at the full context window. The
+  passthrough probes the engine and stays silent on older versions.
 - **ExLlamaV3 1.6.6 is now the default engine**, replacing 1.6.0. v1.6.6 publishes
   the same prebuilt wheel matrix (cu128: torch 2.8.0–2.11.0; cu132: torch
   2.11.0–2.13.0), so no platform or torch version is newly restricted. An

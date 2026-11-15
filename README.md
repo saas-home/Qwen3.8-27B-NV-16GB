@@ -1,11 +1,11 @@
-# ⚡ Qwen3.8-27B for 16GB NVIDIA GPUs (Extreme 204.8k Context & Continuous Batching)
+# ⚡ Qwen3.8-27B for 16GB NVIDIA GPUs (Extreme 240k Context & Continuous Batching)
 
 <p align="center">
   <a href="https://github.com/saas-home/Qwen3.8-27B-NV-16GB"><img src="https://img.shields.io/badge/Platform-Ubuntu_26.04_%2F_24.04_LTS-E95420?style=for-the-badge&logo=ubuntu&logoColor=white" alt="Ubuntu" /></a>
   <a href="https://github.com/saas-home/Qwen3.8-27B-NV-16GB"><img src="https://img.shields.io/badge/Target_GPU-RTX_4070_Ti_SUPER_(16GB)-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="NVIDIA 16GB" /></a>
-  <a href="https://github.com/saas-home/Qwen3.8-27B-NV-16GB"><img src="https://img.shields.io/badge/Context_Window-204%2C800_Tokens-007ACC?style=for-the-badge" alt="204.8k Context" /></a>
+  <a href="https://github.com/saas-home/Qwen3.8-27B-NV-16GB"><img src="https://img.shields.io/badge/Context_Window-245%2C760_Tokens-007ACC?style=for-the-badge" alt="240k Context" /></a>
   <a href="https://github.com/saas-home/Qwen3.8-27B-NV-16GB"><img src="https://img.shields.io/badge/Concurrency-PARALLEL%3D2_Continuous_Batching-8A2BE2?style=for-the-badge" alt="Continuous Batching" /></a>
-  <a href="https://github.com/saas-home/Qwen3.8-27B-NV-16GB"><img src="https://img.shields.io/badge/Engine-ExLlamaV3_v1.6.6-success?style=for-the-badge" alt="ExLlamaV3" /></a>
+  <a href="https://github.com/saas-home/Qwen3.8-27B-NV-16GB"><img src="https://img.shields.io/badge/Engine-ExLlamaV3_v1.6.7-success?style=for-the-badge" alt="ExLlamaV3" /></a>
   <a href="https://github.com/saas-home/Qwen3.8-27B-NV-16GB/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0%20%2F%20MIT-orange?style=for-the-badge" alt="License" /></a>
 </p>
 
@@ -31,20 +31,21 @@
 
 This repository transforms **[Qwen/Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B)** in turboderp's EXL3 quant into an **enterprise-grade, production-stable serving kit** specifically engineered for **Ubuntu Linux** (**Ubuntu 26.04 LTS** and **Ubuntu 24.04 LTS**) and consumer **16 GB NVIDIA GPUs** (benchmarked on the **NVIDIA GeForce RTX 4070 Ti SUPER 16 GB**).
 
-Standard desktop setups truncate context to ~117k tokens and serialize multi-agent requests behind a global lock. This fork unlocks a full **204,800-token context window (~800 continuous pages)**, **2-slot concurrent continuous batching**, zero-VRAM multimodal vision offloading, host DDR5 prompt caching, and an **automated 14-stage enterprise qualification suite** on a single 16 GB card.
+Standard desktop setups truncate context to ~117k tokens and serialize multi-agent requests behind a global lock. This fork unlocks a full **245,760-token context window (~960 continuous pages, inside the model's native 262,144-token frame)**, **2-slot concurrent continuous batching**, zero-VRAM multimodal vision offloading, host DDR5 prompt caching, host-side n-gram drafting, and an **automated 14-stage enterprise qualification suite** on a single 16 GB card.
 
 ---
 
 ## 🚀 Key Benefits (Over Upstream Baseline)
 
 ### 🧠 1. Extreme Context & Memory Tiering
-* **Full 204.8k Context Window (+73.9%):** Expands context from upstream's truncated ~117k tokens to **204,800 tokens (~800 continuous pages)**, certified up to 203,852 tokens (99.54% of hardware ceiling) with zero OOM crashes.
+* **Full 240k Context Window (+108.7%):** Expands context from upstream's truncated ~117k tokens to **245,760 tokens (~960 continuous pages)** — within the model's native 262,144-token frame. The 204,800 configuration was certified to 203,852 tokens by the 14-stage ladder; the 240k window is live-verified with a 165,845-token prompt (848 tok/s cold prefill, peak 15,340 MiB, zero OOM).
 * **Asymmetric KV Cache (`CACHE_QUANT=4,3`):** 4-bit Key / 3-bit Value quantization saves **600 MiB VRAM**, restoring **>1 GB safety headroom** while preserving 100% precision in 16-hop needle retrieval.
 * **Zero-VRAM Multimodal Vision (`EXL3_VISION_PINNED=1`):** Offloads vision tower to host DDR5 RAM, consuming **0.00 GB GPU VRAM** during text generation with **1.06s TTFT** invoice parsing.
 * **24 GB DDR5 Host Prompt Cache (`CPU_CACHE_GB=24`):** Secondary host RAM tier enables **sub-second TTFT (0.91s at 200k tokens)** on iterative agent turns.
 
 ### ⚡ 2. Concurrency, Throughput & Silicon Tuning
 * **Continuous Multi-Client Batching (`PARALLEL=2`):** Replaces upstream's serial request lock with concurrent batching, delivering **+58% aggregate throughput (70.25 tok/s)** across dual streams.
+* **Zero-VRAM N-gram Drafting (`NGRAM_MATCH_MIN=3`):** Host-side suffix-automaton speculative drafting (ExLlamaV3 ≥ 1.6.7) — no draft weights, no VRAM, and it composes with the full 240k window, unlike MTP which caps context. Speeds up repetitive continuations (code, tool loops); neutral on novel prose.
 * **Automated Headless VRAM Detection (`is_headless()`):** Drops desktop compositor reserve from 1.3 GB to 0.3 GB on Linux servers, expanding usable VRAM to **15.7 GB**.
 * **AMD Ryzen 3D V-Cache Affinity (`AFFINITY=0-7,16-23`):** Pinned exclusively to CCD0, eliminating cross-CCD interconnect latency penalties on Ryzen 9 7950X3D CPUs.
 * **Dynamic Semver Compatibility (v1.5.0+):** Forward-compatible version parsing enables ExLlamaV3 v1.5.0 kernel optimizations and CUDA 12.8 / 13.2 support.
@@ -62,9 +63,9 @@ Standard desktop setups truncate context to ~117k tokens and serialize multi-age
 
 | Architectural Dimension | Upstream Baseline (`MiaAI-Lab`) | This Fork (`saas-home/Qwen3.8-27B-NV-16GB`) | Operational Advantage |
 | :--- | :--- | :--- | :--- |
-| **Context Window Horizon** | `117,760 tokens` (truncated) | **`204,800 tokens`** (~800 pages) | **+73.9% context expansion**; certified up to 203,852 tokens with 0 OOMs |
+| **Context Window Horizon** | `117,760 tokens` (truncated) | **`245,760 tokens`** (~960 pages) | **+108.7% context expansion**; 204.8k certified to 203,852 tokens, 240k live-verified at 165,845 tokens, 0 OOMs |
 | **Multi-Client Batching** | `Serial Lock` (1 client at a time) | **`PARALLEL=2` Continuous Batching** | **Both clients stream simultaneously**; **+58% throughput (70.25 tok/s)** |
-| **KV Cache Architecture** | Symmetric int4 (3.73 GB @ 204k) | **Asymmetric `CACHE_QUANT=4,3`** (3.15 GB) | **Saves 600 MiB VRAM**, restoring **>1 GB safety headroom** |
+| **KV Cache Architecture** | Symmetric int4 (3.73 GB @ 204k) | **Asymmetric `CACHE_QUANT=4,3`** (3.78 GB @ 240k) | **~600 MiB saved vs symmetric int4 at equal context**, restoring **>1 GB safety headroom** |
 | **Context Headroom Gating**| Unprotected (`AssertionError` crashes) | **Dynamic Headroom Clamping** | Clamps requested tokens to remaining KV slots; **eliminates server crashes** |
 | **Multimodal Vision Tower**| ~0.87 GB resident in GPU VRAM | **Zero-VRAM Host Offload (`EXL3_VISION_PINNED=1`)** | Reclaims ~0.87 GB VRAM for text context; **1.06s TTFT** invoice parsing |
 | **Host Prompt Cache Tier** | Disabled (`CPU_CACHE_GB=0`) | **`24 GB` DDR5 Secondary Tier** | **Sub-second TTFT (0.91s at 200k context)** on iterative agent turns |
@@ -84,7 +85,7 @@ Standard desktop setups truncate context to ~117k tokens and serialize multi-age
 flowchart TD
     subgraph GPU_VRAM["NVIDIA 16 GB GDDR6X VRAM (15.7 GB Budget)"]
         Weights["Model Weights (3.0 bpw EXL3)<br/><b>10.42 GB</b>"]
-        KVCache["Asymmetric KV Cache (4-bit K / 3-bit V)<br/><b>3.15 GB @ 204.8k tokens</b>"]
+        KVCache["Asymmetric KV Cache (4-bit K / 3-bit V)<br/><b>3.78 GB @ 240k tokens</b>"]
         Headroom["Safety Headroom & Activation Buffers<br/><b>> 1.00 GB Free Margin</b>"]
     end
 
@@ -93,7 +94,7 @@ flowchart TD
         CPUCache["Host Secondary Prompt Cache<br/><code>CPU_CACHE_GB=24</code> (0.91s TTFT @ 200k)"]
     end
 
-    subgraph ENGINE["ExLlamaV3 v1.6.6 Serving Engine"]
+    subgraph ENGINE["ExLlamaV3 v1.6.7 Serving Engine"]
         Batcher["Continuous Batching Engine (PARALLEL=2)"]
         Clamp["Dynamic Headroom Clamping & Safety Guard"]
     end
@@ -109,7 +110,7 @@ flowchart TD
 |                         16 GB PHYSICAL VRAM ALLOCATION ARCHITECTURE                               |
 +----------------------------------------------------------------------------------------------------+
 | [ Model Weights: 3.0 bpw EXL3 ] | [ Asymmetric KV Cache: 4-bit K / 3-bit V ] | [ Headroom: >1 GB ] |
-|            10.42 GB             |        3.15 GB @ 204.8k tokens             |   Safe Allocation   |
+|            10.42 GB             |        3.78 GB @ 240k tokens               |   Safe Allocation   |
 +---------------------------------+--------------------------------------------+---------------------+
 | [ Host DDR5 RAM Pinned Offload: EXL3_VISION_PINNED=1 ]  --> 0.00 GB VRAM consumed by Vision Tower  |
 | [ Host DDR5 RAM Secondary Tier: CPU_CACHE_GB=24 ]       --> Sub-second TTFT on iterative prefixes  |
@@ -138,7 +139,7 @@ cd Qwen3.8-27B-NV-16GB
 ```
 
 ### Step 2: Automated Environment Setup
-Run the setup script. It inspects your GPU, provisions the isolated `.venv/`, installs PyTorch cu128 and ExLlamaV3 v1.6.6, and downloads the 3.0 bpw EXL3 model weights:
+Run the setup script. It inspects your GPU, provisions the isolated `.venv/`, installs PyTorch cu128 and ExLlamaV3 v1.6.7, and downloads the 3.0 bpw EXL3 model weights:
 ```bash
 ./linux/setup.sh
 ```
@@ -148,17 +149,21 @@ The setup script generates a `.env` file. Ensure the following production-harden
 
 ```ini
 # Model Directory & Extreme Context Window
-MODEL_DIR=models/turboderp_Qwen3.8-27B-exl3_3.00bpw
-CONTEXT_SIZE=204800
+MODEL_DIR=models/Qwen3.8-27B-EXL3-SC-3.0bpw-H4
+CONTEXT_SIZE=245760
+GPU_MEM_GB=15.7
 
-# Asymmetric KV Cache (4-bit Keys / 3-bit Values — saves 600 MiB VRAM)
+# Engine & zero-VRAM n-gram drafting (ExLlamaV3 >= 1.6.7)
+EXL3_VERSION=1.6.7
+NGRAM_MATCH_MIN=3
+
+# Asymmetric KV Cache (4-bit Keys / 3-bit Values — saves ~600 MiB vs int4)
 CACHE_QUANT=4,3
 
 # 2-Slot Parallel Continuous Batching
 PARALLEL=2
 
 # Headless 16 GB VRAM Budget & Zero-VRAM Vision Offload
-GPU_MEM_GB=15.7
 EXL3_VISION_PINNED=1
 CPU_CACHE_GB=24
 
@@ -215,7 +220,7 @@ SIMPLEX_HARNESS_PORT=3080
 
 The server exposes a standard **OpenAI-compatible endpoint**:
 - **API Base URL:** `http://127.0.0.1:8888/v1`
-- **Model Name:** `qwen3.8-27b` (alias: `qwen3.8-27b-exl3-3.0bpw`)
+- **Model Name:** `qwen3.8-27b` (the server answers any `model` value; this is the id reported by `/v1/models`)
 - **API Key:** `local` (or any dummy placeholder)
 - **DeepSeek Harness Web UI:** `http://127.0.0.1:3080/`
 
@@ -227,14 +232,14 @@ To use this server with [Pi Agent](https://github.com/badlogic/pi-mono), add the
 {
   "providers": {
     "local-openai": {
-      "baseUrl": "http://203.0.113.43:8888/v1",
+      "baseUrl": "http://127.0.0.1:8888/v1",
       "apiKey": "local-placeholder",
       "api": "openai-completions",
       "models": [
         {
           "id": "qwen3.8-27b",
           "name": "qwen3.8-27b",
-          "contextWindow": 200000,
+          "contextWindow": 240000,
           "maxTokens": 16384
         }
       ]
@@ -244,9 +249,9 @@ To use this server with [Pi Agent](https://github.com/badlogic/pi-mono), add the
 ```
 
 > [!IMPORTANT]
-> - **`contextWindow: 200000` (200k)**: Sets a clean, safe horizon below the physical 204.8k VRAM ceiling (`204,800`), reserving headroom for output generation. If omitted, Pi Agent defaults to 8,192 tokens, artificially truncating your context. (You can also set `194560` for a 95% threshold or `204800` for the absolute maximum).
+> - **`contextWindow: 240000` (240k)**: Sets a clean, safe horizon below the physical 240k VRAM ceiling (`245,760`), reserving headroom for output generation. If omitted, Pi Agent defaults to 8,192 tokens, artificially truncating your context. (You can also set `233472` for a 95% threshold or `245760` for the absolute maximum).
 > - **`maxTokens: 16384`**: Aligns with the server's `MAX_TOKENS=16384` generation ceiling, preventing mid-thought cutoffs during deep reasoning or large file refactoring.
-> - **`baseUrl`**: Replace `203.0.113.43:8888` with your server's host IP (or `127.0.0.1:8888` if running locally).
+> - **`baseUrl`**: `127.0.0.1:8888` for an agent on this machine; replace `127.0.0.1` with the server's LAN address for another machine (which also requires `HOST=0.0.0.0` in `.env` — see the warning there).
 
 ### 💻 Claude Code / Cline / Cursor / Aider / Roo Code
 
@@ -312,8 +317,8 @@ cd llm-eval-suite
 # 2. Run complete 22-stage qualification suite against this local instance
 python3 eval.py --endpoint http://127.0.0.1:8888/v1 --auto
 
-# 3. Run only the Context Scaling benchmark up to the 204k hardware cap
-python3 eval.py --test 14 --milestones 4000 16000 64000 128000 200000 203800
+# 3. Run only the Context Scaling benchmark up to the 240k window
+python3 eval.py --test 14 --milestones 4000 16000 64000 128000 200000 240000
 
 # 4. Compare this model's efficiency head-to-head with another model run
 python3 compare.py results/qwen27b.json results/other_model.json --out results/comparison.md
@@ -332,7 +337,11 @@ Empirical cold-prefill performance with prompt salting active (isolating raw har
 | **~64k** | 64,037 toks | 60.45 s (1.0 min) | **1,059.3 tok/s** | **38.62 tok/s** | ✅ **PASS** |
 | **~128k** | 128,074 toks | 162.38 s (2.7 min) | **788.7 tok/s** | **33.51 tok/s** | ✅ **PASS** |
 | **~200k** | 200,067 toks | 327.56 s (5.5 min) | **610.8 tok/s** | **29.30 tok/s** | ✅ **PASS** |
-| **~204k (Hardware Cap)** | **203,852 toks** | **337.69 s (5.6 min)** | **603.7 tok/s** | **29.12 tok/s** | ✅ **PASS** |
+| **~204k (Certified Ladder Top)** | **203,852 toks** | **337.69 s (5.6 min)** | **603.7 tok/s** | **29.12 tok/s** | ✅ **PASS** |
+| **~240k Window (Current)** | **165,845 toks** | 195.84 s wall | **848.0 tok/s** | **31.5 tok/s** | ✅ **PASS** (peak 15,340 MiB / 16,376 MiB) |
+
+> [!NOTE]
+> The ladder rows were measured on the 204.8k configuration (`CONTEXT_SIZE=204800`, 14.7 GB budget). The kit now ships `CONTEXT_SIZE=245760` at a 15.7 GB budget; its deepest verified prompt so far is 165,845 tokens (cold prefill, zero OOM). Full 240k ladder re-certification pending via `llm-eval-suite`.
 
 ### 📊 Per-Request Stats & Telemetry
 
@@ -382,7 +391,7 @@ For in-depth mathematical derivations, asymmetric quantization accuracy proofs a
 
 ## 🚀 Optional: `DRAFT=dflash2` (32 GB cards)
 
-`DRAFT=dflash2` replaces the MTP head with a separate drafter, a DFlash2 block-diffusion draft model. It is off by default. With `DRAFT` unset, `mtp` or `none` nothing below applies: same engine (1.6.6), same `.venv`, same flags, same downloads.
+`DRAFT=dflash2` replaces the MTP head with a separate drafter, a DFlash2 block-diffusion draft model. It is off by default. With `DRAFT` unset, `mtp` or `none` nothing below applies: same engine (1.6.7), same `.venv`, same flags, same downloads.
 
 ```bash
 DRAFT=dflash2        # in .env, then ./linux/start.sh

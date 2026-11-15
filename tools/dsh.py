@@ -56,7 +56,7 @@ from pathlib import Path
 # The version the kit is known to work with. `latest` follows the newest
 # release instead, which is the right setting while dsh is in developer
 # preview and moving fast - and the wrong one when a run has to reproduce.
-DEFAULT_VERSION = "0.1.3-alpha.2"
+DEFAULT_VERSION = "0.2.2-rc.3"
 DEFAULT_PORT = 3080
 
 
@@ -158,6 +158,15 @@ def token_accepted(authenticated: str, timeout: float = 5.0) -> bool:
         return e.code in (301, 302, 303, 307, 308)       # the cookie redirect
     except (urllib.error.URLError, OSError):
         return False
+
+
+def mask(authenticated: str) -> str:
+    """Redact the launch token for logs and status output (audit F-4).
+    The full URL lives in .dsh/url (mode 0600) and is revealed on demand by
+    `simplex harness open`; it should not be persisted in log files or pasted
+    out of terminal scrollback, where any reader rides into the agent."""
+    return URL_RE.sub(lambda m: re.sub(r"token=[A-Za-z0-9_-]+", "token=****",
+                                       m.group(0)), authenticated)
 
 
 def watch_output(proc: subprocess.Popen, echo=None) -> "queue.Queue[str]":
@@ -632,6 +641,14 @@ def main() -> int:
     port = args.port or int(
         cfg.get("SIMPLEX_HARNESS_PORT") or cfg.get("DSH_PORT") or DEFAULT_PORT)
     version = args.version or cfg.get("DSH_VERSION") or DEFAULT_VERSION
+    if str(version).strip().lower() in ("", "latest"):
+        # Audit F-3: an unpinned spec hands the next start to whoever controls
+        # the npm package. A missing pinned version, by contrast, fails closed:
+        # npx resolves nothing and the harness never launches.
+        print("  !! DSH_VERSION=latest: npm decides what code runs at every "
+              "start.\n     Pin a known version (`npm view @deepseek-ai/dsh "
+              "versions`) unless\n     you accept remote-controlled execution "
+              "on this machine.", file=sys.stderr)
     base = args.base or f"http://127.0.0.1:{cfg.get('PORT', '8888')}/v1"
 
     if args.wait > 0 and not wait_for_server(base, args.wait):
@@ -659,7 +676,8 @@ def main() -> int:
         # the file it was written to; without it a browser gets dsh's 401.
         opening = read_url(root)
         if opening is not None and token_accepted(opening):
-            print(f"  harness   {opening}  (already running)")
+            print(f"  harness   {mask(opening)}  (already running; "
+                  f"run ./linux/simplex harness open for the full address)")
             if args.open:
                 import webbrowser
                 webbrowser.open(opening)
@@ -698,7 +716,7 @@ def main() -> int:
         except (ValueError, OSError):     # not the main thread, or no such signal
             pass
 
-    found = watch_output(proc, echo=lambda text: (sys.stdout.write(text),
+    found = watch_output(proc, echo=lambda text: (sys.stdout.write(mask(text)),
                                                   sys.stdout.flush()))
     opening = await_url(proc, found)
     if opening is None:
@@ -713,7 +731,8 @@ def main() -> int:
               f"browser that arrives without it.", file=sys.stderr)
     else:
         write_url(root, opening)
-        print(f"  harness   {opening}")
+        print(f"  harness   {mask(opening)}  "
+              f"(full address: ./linux/simplex harness open)")
     print("  Ctrl+C to stop", flush=True)
     if args.open and opening is not None and wait_ready(proc, port):
         # A server with no desktop session has nothing to open, and saying so

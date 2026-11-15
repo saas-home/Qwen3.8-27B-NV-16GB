@@ -243,6 +243,14 @@ def http_json(url: str, timeout: float = 3.0):
         return None
 
 
+def _mask_url(u: str | None) -> str | None:
+    """Redact the harness launch token in status output and --json (audit
+    F-4). The full address is revealed on demand by `simplex harness open`."""
+    if not u:
+        return u
+    return re.sub(r"token=[A-Za-z0-9_-]+", "token=****", u)
+
+
 def harness_url() -> str | None:
     try:
         return (ROOT / ".dsh" / "url").read_text(encoding="utf-8").strip() or None
@@ -293,7 +301,7 @@ def snapshot() -> dict:
         state["harness"]["running"] = True
         pid, _cmd = port_owner(dsh_port)
         state["harness"]["pid"] = pid or read_pidfile(HARNESS_PID)
-        state["harness"]["url"] = harness_url()
+        state["harness"]["url"] = _mask_url(harness_url())
     return state
 
 
@@ -554,7 +562,8 @@ def cmd_harness(a) -> int:
         if dsh.listening(port):
             out(f"  harness   {green('running')}  http://127.0.0.1:{port}/")
             if harness_url():
-                out("            " + dim(harness_url()))
+                out("            " + dim(_mask_url(harness_url())
+                                         + "   (simplex harness open for the full address)"))
             return 0
         out(f"  harness   {dim('not running')}  (port {port})")
         return 1
@@ -868,6 +877,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("harness", help="the DeepSeek Harness on its own")
     s.add_argument("action", nargs="?", default="status",
                    choices=["start", "stop", "status", "open", "settings"])
+    s.add_argument("-p", "--port", type=int,
+                   help="override SIMPLEX_HARNESS_PORT for this run")
     s.add_argument("--no-open", action="store_true",
                    help="do not open a browser at the token URL")
     s.add_argument("--foreground", action="store_true",

@@ -198,13 +198,13 @@ _load_env() {
 _load_env
 
 # --- which engine, which venv ---------------------------------------------
-# Every DRAFT value runs on ExLlamaV3 1.6.6 in the one .venv, so switching DRAFT
+# Every DRAFT value runs on ExLlamaV3 1.6.7 in the one .venv, so switching DRAFT
 # back and forth never reinstalls anything. transformers is installed with it:
-# 1.6.6's chat template imports it and the engine no longer pulls it in.
+# 1.6.7's chat template imports it and the engine no longer pulls it in.
 # DRAFT=dflash2 (tools/dflash2.py) is the only value with a gate: a card that is
 # too small is refused here, before a download exists.
 VENV=".venv"
-ENGINE_VERSION="1.6.6"
+ENGINE_VERSION="1.6.7"
 _wheel_engine=(--engine-version "$ENGINE_VERSION")
 _extra_pkgs=(transformers)   # tools/dflash2.py EXTRA_PACKAGES
 _extra_probe=", transformers"
@@ -419,7 +419,7 @@ if [ "$_cur_ver" != "unknown" ] && [ "$_cur_ver" != "$_want_ver" ]; then
 fi
 
 # v1.4.4+ is mandatory: this quant ships a quantized vision tower (vision_bits 3),
-# which older builds decode incorrectly, and stock v1.6.6 is what this kit is
+# which older builds decode incorrectly, and stock v1.6.7 is what this kit is
 # validated against.
 if ! "$PYTHON" -c "import sys; from exllamav3.version import __version__ as v; sys.exit(0 if (v == \"$ENGINE_VERSION\" or tuple(map(int, v.split('.')[:3])) >= (1, 4, 4)) else (print(\" !! unexpected exllamav3 version:\", v) or 1))" 2>/dev/null; then
     _gotver="$("$PYTHON" -c 'from exllamav3.version import __version__; print(__version__)' 2>/dev/null || echo unknown)"
@@ -583,6 +583,21 @@ case "$DRAFT" in
 esac
 if [ -n "${DRAFT_TOKENS:-}" ] && [ "$DRAFT_TOKENS" != "0" ]; then
     cmd+=(--draft_tokens "$DRAFT_TOKENS")
+fi
+# N-gram drafting (ExLlamaV3 >= 1.6.7): the SAM table lives in host RAM, so it
+# costs no VRAM and no extra weights. Older engines that do not know the flag
+# are handled by tools/serve_openai.py, which probes the engine before use.
+if [ -n "${NGRAM_MATCH_MIN:-}" ] && [ "$NGRAM_MATCH_MIN" != "0" ]; then
+    cmd+=(--ngram_match_min "$NGRAM_MATCH_MIN")
+fi
+if [ -n "${NGRAM_CORPUS:-}" ]; then
+    cmd+=(--ngram_corpus "$NGRAM_CORPUS")
+fi
+if [ "${NGRAM_RAM:-0}" = "1" ]; then
+    cmd+=(--ngram_ram)
+fi
+if [ "${NGRAM_LOCK:-0}" = "1" ]; then
+    cmd+=(--ngram_lock)
 fi
 if [ "$CPU_CACHE_GB" != "0" ]; then
     cmd+=(--cpu_cache_size "$CPU_CACHE_GB")

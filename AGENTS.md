@@ -12,7 +12,7 @@ This is a Linux serving kit for **Qwen/Qwen3.8-27B** in turboderp's EXL3 quants,
 - **Profile picker**: `tools/profiles.py` detects GPU VRAM and selects the best quant/context/KV-cache combination
 - **Server**: `tools/serve_openai.py` serves the OpenAI-compatible API on `/v1/chat/completions`
 - **Chat UI**: [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) runs as a second Node process on port 3080
-- **Engine**: ExLlamaV3 v1.6.6 (>= v1.4.4 supported), prebuilt wheels when available; source build fallback
+- **Engine**: ExLlamaV3 v1.6.7 (>= v1.4.4 supported), prebuilt wheels when available; source build fallback
 
 ## Directory Structure
 
@@ -57,7 +57,7 @@ This is a Linux serving kit for **Qwen/Qwen3.8-27B** in turboderp's EXL3 quants,
 ## Configuration
 
 - `.env` is created from `.env.example` on first run
-- Key knobs: `MODEL_DIR`, `PROFILE`, `CONTEXT_SIZE`, `CACHE_QUANT`, `GPU_MEM_GB`, `VISION`, `DRAFT`, `PORT`, `HOST`, `UI`
+- Key knobs: `MODEL_DIR`, `PROFILE`, `CONTEXT_SIZE`, `CACHE_QUANT`, `GPU_MEM_GB`, `VISION`, `DRAFT`, `NGRAM_MATCH_MIN`, `PORT`, `HOST`, `UI`
 - `.env` is **data, never shell** — parse it as key=value pairs, never `source` or `exec` it
 
 ## Profile Selection (`tools/profiles.py`)
@@ -69,7 +69,9 @@ The profile picker:
 4. Offers choices (best quality vs longest context)
 5. Writes choice into `.env` (`PROFILE`, `MODEL_DIR`, `HF_TARGET_REPO`, `HF_REVISION`, `MODEL_ID`, `CONTEXT_SIZE`, `CACHE_QUANT`, `GPU_MEM_GB`, `VISION`)
 
-KV cache is **int4** on every profile. The 2.0 bpw baseline uses `CACHE_QUANT=8,4` (int8 K / int4 V).
+KV cache is **int4** on every profile; the shipped 3.0bpw profile uses the asymmetric
+`CACHE_QUANT=4,3` (int4 K / int3 V, ~600 MiB cheaper than symmetric int4 at equal context).
+The 2.0 bpw baseline uses `CACHE_QUANT=8,4` (int8 K / int4 V).
 
 ## Important Pitfalls
 
